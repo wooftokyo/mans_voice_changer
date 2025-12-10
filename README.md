@@ -17,14 +17,35 @@
 
 ## セットアップ
 
-### Windows
+### Windows（コマンドプロンプトから手動で実行）
 
-1. [Python](https://www.python.org/downloads/) をインストール
-   - インストール時に **「Add Python to PATH」にチェック**を入れる
-2. [ffmpeg](https://ffmpeg.org/download.html) をインストール
-   - または PowerShell で `winget install ffmpeg`
-3. `setup.bat` をダブルクリック
-4. `start.bat` をダブルクリックで起動
+```cmd
+# 1. Pythonのインストール確認
+python --version
+
+# Pythonがない場合はインストール:
+# https://www.python.org/downloads/ からダウンロード
+# インストール時に「Add Python to PATH」に必ずチェック！
+
+# 2. ffmpegのインストール（PowerShellで）
+winget install ffmpeg
+
+# 3. プロジェクトのフォルダに移動
+cd C:\path\to\mans_voice_changer
+
+# 4. 依存パッケージをインストール（初回のみ、5-10分かかります）
+pip install -r requirements.txt
+
+# 5. サーバーを起動
+python voice_changer_web.py
+
+# 6. ブラウザで http://localhost:5003 を開く
+```
+
+### Windows（バッチファイルを使う場合）
+
+1. `setup.bat` をダブルクリック（初回のみ）
+2. `start.bat` をダブルクリックで起動
 
 ### Mac / Linux
 
@@ -32,16 +53,23 @@
 # Macの場合、Homebrewで依存関係をインストール
 brew install python3 ffmpeg
 
-# セットアップ
-./setup.sh
+# プロジェクトのフォルダに移動
+cd /path/to/mans_voice_changer
 
-# 起動
-./start.sh
+# 依存パッケージをインストール（初回のみ）
+pip3 install -r requirements.txt
+
+# サーバーを起動
+python3 voice_changer_web.py
+
+# ブラウザで http://localhost:5003 を開く
 ```
+
+または `./setup.sh` → `./start.sh` でも起動できます。
 
 ## 使い方
 
-1. `start.bat` (Windows) または `./start.sh` (Mac/Linux) で起動
+1. サーバーを起動（上記参照）
 2. ブラウザで http://localhost:5003 が自動で開く
 3. 動画ファイルをドラッグ＆ドロップまたはクリックで選択
 4. 処理モードを選択:
