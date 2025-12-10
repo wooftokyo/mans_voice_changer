@@ -23,13 +23,11 @@ app = Flask(__name__)
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 OUTPUT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 ALLOWED_EXTENSIONS = {'mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'flv', 'wmv'}
-MAX_CONTENT_LENGTH = 2 * 1024 * 1024 * 1024  # 2GB
-
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+# アップロードサイズ無制限
 
 # 処理状態を保持
 processing_status = {}
