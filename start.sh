@@ -4,6 +4,15 @@ echo " 男性ボイスチェンジャー 起動中..."
 echo "================================================"
 echo
 
+# スクリプトのディレクトリに移動
+cd "$(dirname "$0")"
+
+# 仮想環境を有効化（存在する場合）
+if [ -d "venv" ]; then
+    source venv/bin/activate
+    echo "仮想環境を使用"
+fi
+
 # Pythonの確認
 if ! command -v python3 &> /dev/null; then
     echo "[エラー] Python3が見つかりません。"

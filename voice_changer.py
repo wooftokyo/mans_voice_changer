@@ -18,6 +18,28 @@ import soundfile as sf
 _clearvoice_separator = None
 
 
+def _patch_torch_numpy_compat():
+    """
+    torch/numpy互換性問題を修正するパッチ
+    'expected np.ndarray (got numpy.ndarray)' エラー対策
+    このアプリ内でのみ有効
+    """
+    try:
+        import torch
+        # torchの内部でnumpy配列チェックを緩和
+        original_from_numpy = torch.from_numpy
+        def patched_from_numpy(arr):
+            if hasattr(arr, '__array__'):
+                arr = np.asarray(arr)
+            return original_from_numpy(arr)
+        torch.from_numpy = patched_from_numpy
+    except ImportError:
+        pass
+
+# アプリ起動時にパッチを適用
+_patch_torch_numpy_compat()
+
+
 def get_clearvoice_separator():
     """ClearVoice話者分離モデルを取得（初回のみロード）"""
     global _clearvoice_separator
@@ -55,7 +77,11 @@ def separate_speakers_clearvoice(audio_path: str, output_dir: str, progress_call
     sf.write(temp_input, y, 16000)
 
     # ClearVoiceで分離（online_write=Trueでファイルに直接書き出し）
-    log("話者分離AIを実行中（初回はモデルダウンロードに時間がかかります）...")
+    global _clearvoice_separator
+    if _clearvoice_separator is None:
+        log("話者分離AIを初期化中（初回のみ、少し時間がかかります）...")
+    else:
+        log("話者分離AIを実行中...")
     separator = get_clearvoice_separator()
 
     # 分離実行（ファイルに直接出力）
@@ -95,6 +121,163 @@ def separate_speakers_clearvoice(audio_path: str, output_dir: str, progress_call
 
     log(f"分離完了: {len(separated_files)}トラック")
     return separated_files
+
+
+def separate_speakers_to_files(
+    input_video: str,
+    output_dir: str,
+    progress_callback=None
+) -> dict:
+    """
+    動画から話者を分離して永続ファイルに保存する（プレビュー用）
+
+    Returns:
+        {
+            'speakers': [
+                {'id': 0, 'file': '/path/to/speaker_0.wav', 'pitch': 186.0},
+                {'id': 1, 'file': '/path/to/speaker_1.wav', 'pitch': 181.0},
+            ],
+            'original_audio': '/path/to/original.wav'
+        }
+    """
+    def log(message):
+        print(message)
+        if progress_callback:
+            progress_callback('separate', message)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1. 音声抽出
+    log("動画から音声を抽出中...")
+    original_audio = os.path.join(output_dir, "original.wav")
+    extract_audio_only(input_video, original_audio)
+
+    # 2. ClearVoice話者分離
+    log("ClearVoice話者分離を実行中...")
+    separated_files = separate_speakers_clearvoice(original_audio, output_dir, progress_callback)
+
+    if not separated_files:
+        log("話者分離に失敗しました")
+        return {'speakers': [], 'original_audio': original_audio}
+
+    # 3. 各話者のピッチを分析して返す
+    speakers = []
+    for i, speaker_file in enumerate(sorted(separated_files)):
+        log(f"話者{i+1}のピッチを分析中...")
+        y_speaker, sr_speaker = librosa.load(speaker_file, sr=16000, mono=True)
+        pitch = estimate_pitch_for_speaker(y_speaker, sr_speaker)
+
+        # 出力ファイル名を整理（speaker_0.wav, speaker_1.wav...）
+        clean_file = os.path.join(output_dir, f"speaker_{i}.wav")
+        if speaker_file != clean_file:
+            import shutil
+            shutil.copy(speaker_file, clean_file)
+
+        speakers.append({
+            'id': i,
+            'file': clean_file,
+            'pitch': float(pitch)
+        })
+        log(f"  話者{i+1}: {pitch:.1f}Hz")
+
+    log(f"話者分離完了: {len(speakers)}人の話者を検出")
+    return {
+        'speakers': speakers,
+        'original_audio': original_audio
+    }
+
+
+def process_with_selected_speakers(
+    input_video: str,
+    output_video: str,
+    speaker_dir: str,
+    male_speaker_ids: list,
+    pitch_shift_semitones: float = -3.0,
+    progress_callback=None
+) -> None:
+    """
+    選択された話者のみピッチダウンして動画を出力する
+
+    Args:
+        input_video: 入力動画パス
+        output_video: 出力動画パス
+        speaker_dir: 分離された話者ファイルが保存されているディレクトリ
+        male_speaker_ids: 男性としてピッチダウンする話者のIDリスト [0, 1, ...]
+        pitch_shift_semitones: ピッチシフト量（半音単位）
+    """
+    def log(message):
+        print(message)
+        if progress_callback:
+            progress_callback('process', message)
+
+    log(f"選択された話者をピッチダウン: {male_speaker_ids}")
+
+    # 1. 話者ファイルを読み込み
+    speaker_files = sorted([
+        f for f in os.listdir(speaker_dir)
+        if f.startswith('speaker_') and f.endswith('.wav')
+    ])
+
+    if not speaker_files:
+        raise ValueError("話者ファイルが見つかりません")
+
+    # 2. 元の音声を読み込み（44100Hz）
+    original_audio = os.path.join(speaker_dir, "original.wav")
+    log("元音声を読み込み中...")
+    y_original, sr_original = librosa.load(original_audio, sr=44100, mono=False)
+    if y_original.ndim == 1:
+        y_original = np.stack([y_original, y_original])
+    target_len = y_original.shape[1]
+
+    # 3. 各話者を処理
+    processed_speakers = []
+    for speaker_file in speaker_files:
+        speaker_id = int(speaker_file.replace('speaker_', '').replace('.wav', ''))
+        speaker_path = os.path.join(speaker_dir, speaker_file)
+
+        # 16kHz -> 44.1kHzにリサンプリング
+        y_sp_16k, _ = librosa.load(speaker_path, sr=16000, mono=True)
+        y_sp = librosa.resample(y_sp_16k, orig_sr=16000, target_sr=44100)
+
+        if speaker_id in male_speaker_ids:
+            log(f"話者{speaker_id+1}（男性選択）をピッチダウン中...")
+            y_sp = pitch_shift_audio(y_sp, 44100, pitch_shift_semitones)
+        else:
+            log(f"話者{speaker_id+1}はそのまま")
+
+        processed_speakers.append(y_sp)
+
+    # 4. 合成
+    log("音声を合成中...")
+    y_mixed = np.zeros(target_len)
+    for sp in processed_speakers:
+        if len(sp) < target_len:
+            sp = np.pad(sp, (0, target_len - len(sp)))
+        elif len(sp) > target_len:
+            sp = sp[:target_len]
+        y_mixed += sp
+
+    # 正規化
+    if len(processed_speakers) > 1:
+        y_mixed = y_mixed / len(processed_speakers)
+
+    # クリッピング防止
+    max_val = np.max(np.abs(y_mixed))
+    if max_val > 1.0:
+        y_mixed = y_mixed / max_val * 0.95
+
+    # ステレオに変換
+    y_stereo = np.stack([y_mixed, y_mixed])
+
+    # 5. 一時ファイルに保存
+    temp_audio = os.path.join(speaker_dir, "processed_audio.wav")
+    sf.write(temp_audio, y_stereo.T, 44100)
+
+    # 6. 動画と合成
+    log("動画と音声を合成中...")
+    merge_audio_video(temp_audio, input_video, output_video)
+
+    log("処理完了!")
 
 
 def process_with_clearvoice(
@@ -140,16 +323,38 @@ def process_with_clearvoice(
 
             # ピッチを推定（長い音声用の関数を使用）
             pitch = estimate_pitch_for_speaker(y_speaker, sr_speaker)
-            is_male = is_male_voice(pitch, male_threshold)
 
             speaker_pitches.append({
                 'file': speaker_file,
                 'pitch': pitch,
-                'is_male': is_male
+                'is_male': False  # 後で相対比較で決定
             })
 
-            gender = "男性" if is_male else "女性"
-            log('analyze', f"  話者{i+1}: {pitch:.1f}Hz → {gender}")
+            log('analyze', f"  話者{i+1}: {pitch:.1f}Hz")
+
+        # 相対比較で男性を判定（ピッチが最も低い話者以外を男性とする）
+        # 注: ClearVoiceの分離結果では、低ピッチ=女性、高ピッチ=男性の傾向がある
+        if len(speaker_pitches) >= 2:
+            # 有効なピッチ（0より大きい）を持つ話者のみ比較
+            valid_speakers = [sp for sp in speaker_pitches if sp['pitch'] > 0]
+            if valid_speakers:
+                # 最も低いピッチの話者を女性、それ以外を男性とする
+                min_pitch_speaker = min(valid_speakers, key=lambda x: x['pitch'])
+                for sp in valid_speakers:
+                    if sp != min_pitch_speaker:
+                        sp['is_male'] = True
+                log('analyze', f"  → 相対比較: 最低ピッチ({min_pitch_speaker['pitch']:.1f}Hz)を女性、他を男性と判定")
+        elif len(speaker_pitches) == 1:
+            # 1人の場合は閾値で判定
+            sp = speaker_pitches[0]
+            sp['is_male'] = is_male_voice(sp['pitch'], male_threshold)
+            gender = "男性" if sp['is_male'] else "女性"
+            log('analyze', f"  → 単独話者: 閾値判定で{gender}")
+
+        # 判定結果をログ出力
+        for i, sp_info in enumerate(speaker_pitches):
+            gender = "男性" if sp_info['is_male'] else "女性"
+            log('analyze', f"  話者{i+1}: {sp_info['pitch']:.1f}Hz → {gender}")
 
         # 4. 男性話者の音声をピッチシフト
         log('pitch', "ステップ4: 男性話者の音声をピッチシフト...")
@@ -323,6 +528,50 @@ def is_male_voice(pitch: float, threshold: float = 165) -> bool:
     return 0 < pitch < threshold
 
 
+def calculate_local_threshold(pitches: list, base_threshold: float = 165) -> float:
+    """
+    区間内のピッチ分布から最適な閾値を計算する
+
+    Args:
+        pitches: 区間内で検出されたピッチのリスト
+        base_threshold: ベース閾値（分布が不十分な場合に使用）
+
+    Returns:
+        計算された閾値
+    """
+    if len(pitches) < 10:
+        return base_threshold
+
+    pitches_array = np.array(pitches)
+
+    # ヒストグラムで分布を分析
+    hist, bin_edges = np.histogram(pitches_array, bins=20, range=(50, 350))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    # スムージング
+    from scipy.ndimage import uniform_filter1d
+    smoothed = uniform_filter1d(hist.astype(float), size=3)
+
+    # 100-200Hzの範囲で谷を探す（二峰性の場合）
+    for j in range(len(bin_centers)):
+        if 120 < bin_centers[j] < 200:
+            if j > 0 and j < len(smoothed) - 1:
+                if smoothed[j] < smoothed[j-1] and smoothed[j] < smoothed[j+1]:
+                    if smoothed[j] < np.mean(smoothed) * 0.7:
+                        return bin_centers[j]
+
+    # 谷が見つからない場合は中央値ベースで判定
+    median = np.median(pitches_array)
+    if median < 140:
+        # 低い声が多い → 男性が主体、閾値を少し上げる
+        return min(base_threshold + 10, 190)
+    elif median > 200:
+        # 高い声が多い → 女性が主体、閾値を少し下げる
+        return max(base_threshold - 10, 140)
+
+    return base_threshold
+
+
 def pitch_shift_audio(y: np.ndarray, sr: int, semitones: float) -> np.ndarray:
     """音声のピッチをシフトする"""
     return librosa.effects.pitch_shift(y, sr=sr, n_steps=semitones)
@@ -334,11 +583,15 @@ def process_simple(
     pitch_shift_semitones: float = -3.0,
     segment_duration: float = 0.5,
     male_threshold: float = 165,
+    adaptive_window: float = 300.0,
     progress_callback=None
 ) -> None:
     """
     簡易版：ピッチ検出ベースで男性の声のみピッチを下げる
-    Demucsを使わないので高速
+    動的閾値調整: adaptive_window秒ごとに閾値を再計算
+
+    Args:
+        adaptive_window: 閾値再計算の区間（秒）。0で固定閾値モード
     """
     def log(step, message):
         print(message)
@@ -354,19 +607,35 @@ def process_simple(
         y = np.stack([y, y])
 
     y_mono = librosa.to_mono(y)
+    total_duration = len(y_mono) / sr
 
     # セグメントごとに処理
     segment_samples = int(segment_duration * sr)
     num_segments = len(y_mono) // segment_samples + 1
 
     log('pitch', f"セグメント数: {num_segments} (各{segment_duration}秒)")
-    log('pitch', f"男性判定閾値: {male_threshold}Hz")
+    log('pitch', f"ベース閾値: {male_threshold}Hz")
+
+    # 動的閾値調整の設定
+    if adaptive_window > 0 and total_duration > adaptive_window:
+        adaptive_samples = int(adaptive_window * sr)
+        num_windows = int(np.ceil(len(y_mono) / adaptive_samples))
+        log('pitch', f"動的閾値調整: {adaptive_window}秒ごと ({num_windows}区間)")
+    else:
+        adaptive_samples = len(y_mono)
+        num_windows = 1
+        log('pitch', f"固定閾値モード")
 
     y_processed = y.copy()
 
     male_segments = 0
     female_segments = 0
     silent_segments = 0
+    threshold_history = []
+
+    # 第1パス: 各区間のピッチを収集
+    log('pitch', "第1パス: ピッチ分布を解析中...")
+    window_pitches = [[] for _ in range(num_windows)]
 
     for i in range(num_segments):
         start = i * segment_samples
@@ -377,7 +646,44 @@ def process_simple(
 
         segment_mono = y_mono[start:end]
 
-        # 無音チェック（閾値を下げる）
+        # 無音チェック
+        if np.max(np.abs(segment_mono)) < 0.005:
+            continue
+
+        # ピッチを推定
+        pitch = estimate_pitch_for_segment(segment_mono, sr)
+
+        if pitch > 0:
+            # どの区間に属するか
+            window_idx = min(start // adaptive_samples, num_windows - 1)
+            window_pitches[window_idx].append(pitch)
+
+        # 進捗表示（20セグメントごと）
+        if i > 0 and i % 20 == 0:
+            progress = int((i / num_segments) * 50)
+            log('pitch', f"  ピッチ解析: {progress}%")
+
+    # 各区間の閾値を計算
+    window_thresholds = []
+    for idx, pitches in enumerate(window_pitches):
+        local_threshold = calculate_local_threshold(pitches, male_threshold)
+        window_thresholds.append(local_threshold)
+        start_time = idx * adaptive_window
+        end_time = min((idx + 1) * adaptive_window, total_duration)
+        log('pitch', f"  区間 {start_time:.0f}-{end_time:.0f}秒: 閾値={local_threshold:.0f}Hz (サンプル={len(pitches)})")
+
+    # 第2パス: ピッチシフト処理
+    log('pitch', "第2パス: ピッチシフト処理中...")
+    for i in range(num_segments):
+        start = i * segment_samples
+        end = min((i + 1) * segment_samples, len(y_mono))
+
+        if start >= len(y_mono):
+            break
+
+        segment_mono = y_mono[start:end]
+
+        # 無音チェック
         if np.max(np.abs(segment_mono)) < 0.005:
             silent_segments += 1
             continue
@@ -388,8 +694,12 @@ def process_simple(
         if pitch == 0:
             continue
 
+        # この区間の閾値を取得
+        window_idx = min(start // adaptive_samples, num_windows - 1)
+        current_threshold = window_thresholds[window_idx]
+
         # 男性の声かどうか判定
-        if is_male_voice(pitch, male_threshold):
+        if is_male_voice(pitch, current_threshold):
             male_segments += 1
 
             # 男性の声：ピッチを下げる
@@ -420,8 +730,8 @@ def process_simple(
 
         # 進捗表示（10セグメントごと）
         if i > 0 and i % 10 == 0:
-            progress = int((i / num_segments) * 100)
-            log('pitch', f"  進捗: {progress}% ({i}/{num_segments})")
+            progress = 50 + int((i / num_segments) * 50)
+            log('pitch', f"  処理: {progress}%")
 
     log('pitch', f"結果: 男性={male_segments}, 女性={female_segments}, 無音={silent_segments}")
 
@@ -442,6 +752,7 @@ def process_video(
     segment_duration: float = 0.5,
     male_threshold: float = 165,
     use_clearvoice: bool = True,
+    adaptive_window: float = 300.0,
     progress_callback=None
 ) -> None:
     """
@@ -450,6 +761,7 @@ def process_video(
     use_clearvoice: TrueならClearVoice話者分離を使用（高精度）、Falseなら簡易版
     segment_duration: 簡易版のセグメント長（秒）
     male_threshold: 男性判定のピッチ閾値（Hz）
+    adaptive_window: 動的閾値調整の区間（秒）。0で固定閾値モード
     """
     def log(step, message):
         print(message)
@@ -492,6 +804,7 @@ def process_video(
                 pitch_shift_semitones,
                 segment_duration,
                 male_threshold,
+                adaptive_window,
                 progress_callback
             )
 
@@ -505,6 +818,53 @@ def process_video(
 def extract_audio_only(video_path: str, output_path: str) -> None:
     """動画から音声のみを抽出してWAVで保存"""
     extract_audio(video_path, output_path)
+
+
+def analyze_speech_segments(y: np.ndarray, sr: int, silence_threshold: float = 0.01) -> list:
+    """
+    音声の発話区間を分析し、各発話の長さ（秒）のリストを返す
+
+    Args:
+        y: 音声データ
+        sr: サンプルレート
+        silence_threshold: 無音判定の閾値（RMS）
+
+    Returns:
+        発話区間の長さ（秒）のリスト
+    """
+    # RMSエネルギーを計算（フレーム単位）
+    frame_length = int(0.025 * sr)  # 25ms
+    hop_length = int(0.010 * sr)    # 10ms
+
+    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+
+    # 無音/有音を判定
+    is_speech = rms > silence_threshold
+
+    # 発話区間の長さを計算
+    speech_durations = []
+    in_speech = False
+    speech_start = 0
+
+    for i, speech in enumerate(is_speech):
+        if speech and not in_speech:
+            # 発話開始
+            in_speech = True
+            speech_start = i
+        elif not speech and in_speech:
+            # 発話終了
+            in_speech = False
+            duration = (i - speech_start) * hop_length / sr
+            if duration > 0.1:  # 0.1秒以上の発話のみカウント
+                speech_durations.append(duration)
+
+    # 最後の発話区間
+    if in_speech:
+        duration = (len(is_speech) - speech_start) * hop_length / sr
+        if duration > 0.1:
+            speech_durations.append(duration)
+
+    return speech_durations
 
 
 def analyze_pitch_distribution(video_path: str, segment_duration: float = 0.3, progress_callback=None) -> dict:
@@ -537,6 +897,18 @@ def analyze_pitch_distribution(video_path: str, segment_duration: float = 0.3, p
 
         log("音声ファイルを読み込み中...")
         y, sr = librosa.load(audio_path, sr=44100, mono=True)
+
+        # 発話区間を分析して推奨セグメント長を算出
+        log("発話パターンを分析中...")
+        speech_durations = analyze_speech_segments(y, sr)
+        if speech_durations:
+            # 発話区間の中央値を基準に推奨セグメント長を決定
+            median_duration = float(np.median(speech_durations))
+            # 推奨値: 発話区間の中央値の50-70%程度（細かく捉える）
+            suggested_segment = max(0.2, min(2.0, round(median_duration * 0.6, 1)))
+            log(f"発話区間の中央値: {median_duration:.2f}秒 → 推奨セグメント長: {suggested_segment}秒")
+        else:
+            suggested_segment = 0.5  # デフォルト
 
         # セグメントごとにピッチを検出
         segment_samples = int(segment_duration * sr)
@@ -622,12 +994,14 @@ def analyze_pitch_distribution(video_path: str, segment_duration: float = 0.3, p
         log(f"解析完了: {len(pitches)}セグメント検出")
         log(f"男性推定: {len(male_pitches)}, 女性推定: {len(female_pitches)}")
         log(f"推奨閾値: {round(suggested_threshold)}Hz")
+        log(f"推奨セグメント長: {suggested_segment}秒")
 
         return {
             'pitches': pitches,
             'male_pitches': male_pitches,
             'female_pitches': female_pitches,
             'suggested_threshold': round(suggested_threshold),
+            'suggested_segment': suggested_segment,
             'stats': stats,
             'histogram': {
                 'counts': hist.tolist(),

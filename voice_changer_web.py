@@ -15,7 +15,7 @@ from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
-from voice_changer import process_video, pitch_shift_region, extract_audio_only, analyze_pitch_distribution
+from voice_changer import process_video, pitch_shift_region, extract_audio_only, analyze_pitch_distribution, separate_speakers_to_files, process_with_selected_speakers
 
 app = Flask(__name__)
 
@@ -233,6 +233,48 @@ HTML_TEMPLATE = '''
         .btn-secondary {
             background: #6c757d;
             color: white;
+        }
+        /* 話者カード */
+        .speaker-card {
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 15px;
+            width: 200px;
+            background: #fafafa;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        .speaker-card:hover {
+            border-color: #4a90d9;
+            background: #f0f7ff;
+        }
+        .speaker-card.selected {
+            border-color: #28a745;
+            background: #e8f5e9;
+        }
+        .speaker-card .speaker-title {
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-bottom: 8px;
+        }
+        .speaker-card .speaker-pitch {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+        .speaker-card audio {
+            width: 100%;
+        }
+        .speaker-card .select-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        .speaker-card .select-label input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
         }
         .progress-container {
             margin-top: 20px;
@@ -455,6 +497,11 @@ HTML_TEMPLATE = '''
         }
         .stat-value.male { color: #2196F3; }
         .stat-value.female { color: #E91E63; }
+        .stat-desc {
+            font-size: 0.7em;
+            color: #999;
+            margin-top: 2px;
+        }
         .suggested-threshold {
             background: #d4edda;
             border: 1px solid #c3e6cb;
@@ -529,15 +576,30 @@ HTML_TEMPLATE = '''
                         <span>0 (変更なし)</span>
                     </div>
                 </div>
-                <div class="setting-group" id="segmentGroup">
+                <div class="setting-group" id="segmentGroup" style="display: none;">
                     <div class="setting-label">
-                        <span>セグメント長（秒）</span>
+                        <span>セグメント長（秒）<small style="color: #888;">（簡易版のみ）</small></span>
                         <span class="setting-value" id="segmentValue">0.5</span>
                     </div>
                     <input type="range" id="segmentSlider" min="0.2" max="2.0" step="0.1" value="0.5">
                     <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #888; margin-top: 5px;">
                         <span>0.2 (細かく)</span>
                         <span>2.0 (粗く)</span>
+                    </div>
+                </div>
+                <div class="setting-group" id="adaptiveGroup" style="display: none;">
+                    <div class="setting-label">
+                        <span>動的閾値調整（秒）<small style="color: #888;">（簡易版のみ）</small></span>
+                        <span class="setting-value" id="adaptiveValue">300</span>
+                    </div>
+                    <input type="range" id="adaptiveSlider" min="0" max="600" step="60" value="300">
+                    <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #888; margin-top: 5px;">
+                        <span>0 (固定)</span>
+                        <span>5分ごと</span>
+                        <span>10分ごと</span>
+                    </div>
+                    <div style="font-size: 0.75em; color: #666; margin-top: 5px;">
+                        ※区間ごとにピッチ分布を解析して閾値を自動調整
                     </div>
                 </div>
                 <div class="setting-group">
@@ -581,17 +643,55 @@ HTML_TEMPLATE = '''
         <div class="tab-content" id="tab-editor">
             <div class="help-text">
                 <strong>使い方:</strong>
-                1. 処理済みの動画をアップロード →
-                2. 波形上でドラッグして区間を選択 →
-                3. 「選択区間をピッチ変換」をクリック
+                1. 動画をアップロード →
+                2. 「話者分離」で音声を分離 →
+                3. 各話者を試聴して男性を選択 →
+                4. 「ピッチダウン実行」
             </div>
 
             <div class="upload-area" id="editorUploadArea">
                 <div class="upload-icon">🎬</div>
                 <div class="upload-text">編集する動画をドロップまたはクリック</div>
-                <div class="upload-hint">自動処理後の動画、または元の動画</div>
+                <div class="upload-hint">ClearVoiceで話者を分離します</div>
             </div>
             <input type="file" id="editorFileInput" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v,.flv,.wmv">
+
+            <!-- 話者分離セクション -->
+            <div id="speakerSeparationSection" style="display: none; margin-top: 20px;">
+                <button class="btn btn-primary" id="separateSpeakersBtn">話者分離を実行</button>
+                <div class="progress-container" id="separateProgressContainer" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="separateProgressFill"></div>
+                    </div>
+                    <div class="status-text" id="separateStatusText">話者分離中...</div>
+                </div>
+                <div class="log-container" id="separateLogContainer" style="display: none; margin-top: 10px;">
+                    <div class="log-box" id="separateLogBox"></div>
+                </div>
+            </div>
+
+            <!-- 話者選択セクション -->
+            <div id="speakerSelectionSection" style="display: none; margin-top: 20px;">
+                <h3 style="margin-bottom: 15px;">話者を試聴して男性を選択</h3>
+                <div id="speakerList" style="display: flex; gap: 15px; flex-wrap: wrap;"></div>
+                <div style="margin-top: 20px; display: flex; gap: 10px; align-items: center;">
+                    <div class="setting-group" style="width: 200px; margin: 0;">
+                        <div class="setting-label">
+                            <span>ピッチ</span>
+                            <span class="setting-value" id="speakerPitchValue">-3.0</span>
+                        </div>
+                        <input type="range" id="speakerPitchSlider" min="-12" max="0" step="0.5" value="-3">
+                    </div>
+                    <button class="btn btn-primary" id="processSpeakersBtn" disabled>選択した話者をピッチダウン</button>
+                </div>
+                <div class="progress-container" id="speakerProcessProgressContainer" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="speakerProcessProgressFill"></div>
+                    </div>
+                    <div class="status-text" id="speakerProcessStatusText">処理中...</div>
+                </div>
+                <div id="speakerResultArea" style="margin-top: 15px;"></div>
+            </div>
 
             <div class="editor-container" id="editorContainer">
                 <video id="videoPreview" class="video-preview" controls></video>
@@ -785,16 +885,19 @@ HTML_TEMPLATE = '''
                         <h4>音声解析結果</h4>
                         <div class="analysis-stats">
                             <div class="stat-box">
-                                <div class="stat-label">検出セグメント</div>
+                                <div class="stat-label">検出セグメント数</div>
                                 <div class="stat-value">${totalCount}</div>
+                                <div class="stat-desc">0.3秒ごとの音声区間</div>
                             </div>
                             <div class="stat-box">
-                                <div class="stat-label">男性と推定</div>
+                                <div class="stat-label">男性の声と推定</div>
                                 <div class="stat-value male">${maleCount}</div>
+                                <div class="stat-desc">ピッチダウン対象</div>
                             </div>
                             <div class="stat-box">
-                                <div class="stat-label">女性と推定</div>
+                                <div class="stat-label">女性の声と推定</div>
                                 <div class="stat-value female">${femaleCount}</div>
+                                <div class="stat-desc">そのまま維持</div>
                             </div>
                             <div class="stat-box">
                                 <div class="stat-label">最低ピッチ</div>
@@ -817,8 +920,24 @@ HTML_TEMPLATE = '''
                                 </button>
                             </div>
                         </div>
+                        ${result.suggested_segment ? `
+                        <div class="suggested-threshold" style="margin-top: 10px;" id="suggestedSegmentArea">
+                            <strong>推奨セグメント長: ${result.suggested_segment}秒</strong>
+                            <small style="color: #666;">（発話パターンから算出）</small>
+                            <div class="apply-suggestion">
+                                <button class="btn btn-success" onclick="applySuggestedSegment(${result.suggested_segment})">
+                                    このセグメント長を適用
+                                </button>
+                            </div>
+                        </div>
+                        ` : ''}
                     `;
                     analysisResult.classList.add('show');
+                    // 簡易版モードでない場合はセグメント推奨を非表示
+                    const segArea = document.getElementById('suggestedSegmentArea');
+                    if (segArea && document.getElementById('modeClearvoice').checked) {
+                        segArea.style.display = 'none';
+                    }
                     analyzeBtn.disabled = false;
                     analyzeBtn.textContent = '音声を解析して閾値を推定';
                 } else if (data.status === 'error') {
@@ -833,6 +952,14 @@ HTML_TEMPLATE = '''
         window.applySuggestedThreshold = (value) => {
             thresholdSlider.value = value;
             thresholdValue.textContent = value;
+        };
+
+        window.applySuggestedSegment = (value) => {
+            segmentSlider.value = value;
+            segmentValue.textContent = value;
+            // 簡易版モードに切り替え
+            document.getElementById('modeSimple').checked = true;
+            updateSegmentVisibility();
         };
 
         logToggle.addEventListener('click', () => {
@@ -858,10 +985,30 @@ HTML_TEMPLATE = '''
         const segmentValue = document.getElementById('segmentValue');
         const thresholdSlider = document.getElementById('thresholdSlider');
         const thresholdValue = document.getElementById('thresholdValue');
+        const adaptiveSlider = document.getElementById('adaptiveSlider');
+        const adaptiveValue = document.getElementById('adaptiveValue');
 
         pitchSlider.addEventListener('input', () => pitchValue.textContent = pitchSlider.value);
         segmentSlider.addEventListener('input', () => segmentValue.textContent = segmentSlider.value);
         thresholdSlider.addEventListener('input', () => thresholdValue.textContent = thresholdSlider.value);
+        adaptiveSlider.addEventListener('input', () => {
+            const val = parseInt(adaptiveSlider.value);
+            adaptiveValue.textContent = val === 0 ? '固定' : val;
+        });
+
+        // モード切り替え時にセグメントスライダーの表示/非表示を切り替え
+        const segmentGroup = document.getElementById('segmentGroup');
+        const adaptiveGroup = document.getElementById('adaptiveGroup');
+        const modeClearvoice = document.getElementById('modeClearvoice');
+        const modeSimple = document.getElementById('modeSimple');
+
+        function updateSegmentVisibility() {
+            const show = modeSimple.checked ? 'block' : 'none';
+            segmentGroup.style.display = show;
+            adaptiveGroup.style.display = show;
+        }
+        modeClearvoice.addEventListener('change', updateSegmentVisibility);
+        modeSimple.addEventListener('change', updateSegmentVisibility);
 
         processBtn.addEventListener('click', async () => {
             if (!selectedFile) return;
@@ -878,6 +1025,7 @@ HTML_TEMPLATE = '''
             formData.append('pitch', pitchSlider.value);
             formData.append('segment', segmentSlider.value);
             formData.append('threshold', thresholdSlider.value);
+            formData.append('adaptive_window', adaptiveSlider.value);
             formData.append('use_clearvoice', document.getElementById('modeClearvoice').checked ? 'true' : 'false');
 
             const xhr = new XMLHttpRequest();
@@ -975,6 +1123,26 @@ HTML_TEMPLATE = '''
         let currentEditorFile = null;
         let editorTaskId = null;
 
+        // 話者分離用変数
+        let speakerTaskId = null;
+        let speakerData = [];
+        const speakerSeparationSection = document.getElementById('speakerSeparationSection');
+        const separateSpeakersBtn = document.getElementById('separateSpeakersBtn');
+        const separateProgressContainer = document.getElementById('separateProgressContainer');
+        const separateProgressFill = document.getElementById('separateProgressFill');
+        const separateStatusText = document.getElementById('separateStatusText');
+        const separateLogContainer = document.getElementById('separateLogContainer');
+        const separateLogBox = document.getElementById('separateLogBox');
+        const speakerSelectionSection = document.getElementById('speakerSelectionSection');
+        const speakerList = document.getElementById('speakerList');
+        const speakerPitchSlider = document.getElementById('speakerPitchSlider');
+        const speakerPitchValue = document.getElementById('speakerPitchValue');
+        const processSpeakersBtn = document.getElementById('processSpeakersBtn');
+        const speakerProcessProgressContainer = document.getElementById('speakerProcessProgressContainer');
+        const speakerProcessProgressFill = document.getElementById('speakerProcessProgressFill');
+        const speakerProcessStatusText = document.getElementById('speakerProcessStatusText');
+        const speakerResultArea = document.getElementById('speakerResultArea');
+
         editorUploadArea.addEventListener('click', () => editorFileInput.click());
         editorUploadArea.addEventListener('dragover', (e) => { e.preventDefault(); editorUploadArea.classList.add('dragover'); });
         editorUploadArea.addEventListener('dragleave', () => editorUploadArea.classList.remove('dragover'));
@@ -992,7 +1160,224 @@ HTML_TEMPLATE = '''
         function handleEditorFile(file) {
             currentEditorFile = file;
             const url = URL.createObjectURL(file);
-            loadVideoInEditor(url, file);
+
+            // 話者分離セクションを表示
+            speakerSeparationSection.style.display = 'block';
+            speakerSelectionSection.style.display = 'none';
+            speakerResultArea.innerHTML = '';
+            separateProgressContainer.style.display = 'none';
+            separateLogContainer.style.display = 'none';
+            separateSpeakersBtn.disabled = false;
+            separateSpeakersBtn.textContent = '話者分離を実行';
+
+            // 既存のエディタコンテナは非表示（話者選択後に使う）
+            editorContainer.classList.remove('show');
+        }
+
+        // 話者分離ボタン
+        separateSpeakersBtn.addEventListener('click', async () => {
+            if (!currentEditorFile) return;
+
+            separateSpeakersBtn.disabled = true;
+            separateSpeakersBtn.textContent = 'アップロード中...';
+            separateProgressContainer.style.display = 'block';
+            separateLogContainer.style.display = 'block';
+            separateLogBox.innerHTML = '';
+            separateProgressFill.style.width = '0%';
+
+            const formData = new FormData();
+            formData.append('file', currentEditorFile);
+
+            try {
+                const response = await fetch('/separate_speakers', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (data.error) {
+                    alert(data.error);
+                    separateSpeakersBtn.disabled = false;
+                    separateSpeakersBtn.textContent = '話者分離を実行';
+                    return;
+                }
+
+                speakerTaskId = data.task_id;
+                pollSeparateStatus(speakerTaskId);
+
+            } catch (error) {
+                alert('エラー: ' + error.message);
+                separateSpeakersBtn.disabled = false;
+                separateSpeakersBtn.textContent = '話者分離を実行';
+            }
+        });
+
+        // 話者分離ステータスポーリング
+        let separateLogCount = 0;
+        function pollSeparateStatus(taskId) {
+            fetch('/status/' + taskId)
+                .then(response => response.json())
+                .then(data => {
+                    separateStatusText.textContent = data.step || '処理中...';
+
+                    // ログ更新
+                    if (data.logs && data.logs.length > separateLogCount) {
+                        for (let i = separateLogCount; i < data.logs.length; i++) {
+                            separateLogBox.innerHTML += data.logs[i] + '\\n';
+                        }
+                        separateLogCount = data.logs.length;
+                        separateLogBox.scrollTop = separateLogBox.scrollHeight;
+                    }
+
+                    if (data.status === 'separated') {
+                        separateProgressFill.style.width = '100%';
+                        separateSpeakersBtn.textContent = '話者分離完了';
+
+                        // 話者選択UIを表示
+                        displaySpeakers(taskId, data.speakers);
+
+                    } else if (data.status === 'error') {
+                        separateStatusText.textContent = 'エラー: ' + (data.error || '不明なエラー');
+                        separateSpeakersBtn.disabled = false;
+                        separateSpeakersBtn.textContent = '話者分離を実行';
+
+                    } else {
+                        // 継続してポーリング
+                        setTimeout(() => pollSeparateStatus(taskId), 1000);
+                    }
+                })
+                .catch(error => {
+                    console.error('Status check error:', error);
+                    setTimeout(() => pollSeparateStatus(taskId), 2000);
+                });
+        }
+
+        // 話者カードを表示
+        function displaySpeakers(taskId, speakers) {
+            speakerData = speakers;
+            speakerSelectionSection.style.display = 'block';
+            speakerList.innerHTML = '';
+
+            speakers.forEach((speaker, index) => {
+                const card = document.createElement('div');
+                card.className = 'speaker-card';
+                card.id = 'speaker-card-' + speaker.id;
+                card.innerHTML = `
+                    <div class="speaker-title">話者 ${speaker.id + 1}</div>
+                    <div class="speaker-pitch">推定ピッチ: ${speaker.pitch.toFixed(1)}Hz</div>
+                    <audio controls src="/speaker_audio/${taskId}/${speaker.id}"></audio>
+                    <label class="select-label">
+                        <input type="checkbox" id="speaker-check-${speaker.id}" value="${speaker.id}" onchange="updateSpeakerSelection()">
+                        男性（ピッチダウン対象）
+                    </label>
+                `;
+                speakerList.appendChild(card);
+            });
+
+            processSpeakersBtn.disabled = true;
+        }
+
+        // 話者選択状態を更新
+        function updateSpeakerSelection() {
+            const checkboxes = document.querySelectorAll('[id^="speaker-check-"]');
+            let anyChecked = false;
+
+            checkboxes.forEach(cb => {
+                const card = document.getElementById('speaker-card-' + cb.value);
+                if (cb.checked) {
+                    card.classList.add('selected');
+                    anyChecked = true;
+                } else {
+                    card.classList.remove('selected');
+                }
+            });
+
+            processSpeakersBtn.disabled = !anyChecked;
+        }
+        window.updateSpeakerSelection = updateSpeakerSelection;
+
+        // ピッチスライダー
+        speakerPitchSlider.addEventListener('input', () => {
+            speakerPitchValue.textContent = speakerPitchSlider.value;
+        });
+
+        // 選択話者をピッチダウン
+        processSpeakersBtn.addEventListener('click', async () => {
+            const checkboxes = document.querySelectorAll('[id^="speaker-check-"]:checked');
+            const maleSpeakerIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+
+            if (maleSpeakerIds.length === 0) {
+                alert('男性の話者を選択してください');
+                return;
+            }
+
+            processSpeakersBtn.disabled = true;
+            processSpeakersBtn.textContent = '処理中...';
+            speakerProcessProgressContainer.style.display = 'block';
+            speakerProcessProgressFill.style.width = '10%';
+            speakerProcessStatusText.textContent = '処理を開始中...';
+
+            try {
+                const response = await fetch('/process_selected_speakers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        task_id: speakerTaskId,
+                        male_speaker_ids: maleSpeakerIds,
+                        pitch: parseFloat(speakerPitchSlider.value)
+                    })
+                });
+                const data = await response.json();
+
+                if (data.error) {
+                    alert(data.error);
+                    processSpeakersBtn.disabled = false;
+                    processSpeakersBtn.textContent = '選択した話者をピッチダウン';
+                    return;
+                }
+
+                pollSpeakerProcessStatus(speakerTaskId);
+
+            } catch (error) {
+                alert('エラー: ' + error.message);
+                processSpeakersBtn.disabled = false;
+                processSpeakersBtn.textContent = '選択した話者をピッチダウン';
+            }
+        });
+
+        // 処理ステータスポーリング
+        function pollSpeakerProcessStatus(taskId) {
+            fetch('/status/' + taskId)
+                .then(response => response.json())
+                .then(data => {
+                    speakerProcessStatusText.textContent = data.step || '処理中...';
+
+                    if (data.status === 'complete') {
+                        speakerProcessProgressFill.style.width = '100%';
+                        processSpeakersBtn.textContent = '処理完了';
+
+                        speakerResultArea.innerHTML = `
+                            <div class="result success">
+                                <h3>処理完了!</h3>
+                                <p>選択した話者の声をピッチダウンしました。</p>
+                                <a href="/download/${taskId}" class="btn btn-primary" style="display: inline-block; margin-top: 10px;">ダウンロード</a>
+                            </div>
+                        `;
+
+                    } else if (data.status === 'error') {
+                        speakerProcessStatusText.textContent = 'エラー: ' + (data.error || '不明なエラー');
+                        processSpeakersBtn.disabled = false;
+                        processSpeakersBtn.textContent = '選択した話者をピッチダウン';
+
+                    } else {
+                        speakerProcessProgressFill.style.width = '50%';
+                        setTimeout(() => pollSpeakerProcessStatus(taskId), 1000);
+                    }
+                })
+                .catch(error => {
+                    console.error('Status check error:', error);
+                    setTimeout(() => pollSpeakerProcessStatus(taskId), 2000);
+                });
         }
 
         function loadVideoInEditor(url, file = null) {
@@ -1188,6 +1573,7 @@ def upload():
         pitch = float(request.form.get('pitch', -3.0))
         segment = float(request.form.get('segment', 0.5))
         threshold = float(request.form.get('threshold', 165))
+        adaptive_window = float(request.form.get('adaptive_window', 300))
         use_clearvoice = request.form.get('use_clearvoice', 'true').lower() == 'true'
         task_id = str(uuid.uuid4())
 
@@ -1210,7 +1596,7 @@ def upload():
             'logs': [{'message': 'ファイルを受信しました', 'type': 'info'}]
         }
 
-        thread = threading.Thread(target=process_task, args=(task_id, input_path, output_path, pitch, segment, threshold, use_clearvoice))
+        thread = threading.Thread(target=process_task, args=(task_id, input_path, output_path, pitch, segment, threshold, use_clearvoice, adaptive_window))
         thread.daemon = True
         thread.start()
 
@@ -1382,7 +1768,7 @@ def update_progress(task_id, progress, step):
         processing_status[task_id]['step'] = step
 
 
-def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold=165, use_clearvoice=True):
+def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold=165, use_clearvoice=True, adaptive_window=300.0):
     try:
         mode = "ClearVoice AI" if use_clearvoice else "簡易版"
         add_log(task_id, f'処理モード: {mode}')
@@ -1390,6 +1776,8 @@ def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold
         add_log(task_id, f'男性判定閾値: {threshold}Hz')
         if not use_clearvoice:
             add_log(task_id, f'セグメント長: {segment}秒')
+            adaptive_str = '固定' if adaptive_window == 0 else f'{adaptive_window}秒ごと'
+            add_log(task_id, f'動的閾値調整: {adaptive_str}')
         update_progress(task_id, 20, '音声を抽出中...')
 
         def progress_callback(step, message):
@@ -1406,7 +1794,7 @@ def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold
                 update_progress(task_id, prog, status)
             add_log(task_id, message)
 
-        process_video(input_path, output_path, pitch, segment, threshold, use_clearvoice, progress_callback=progress_callback)
+        process_video(input_path, output_path, pitch, segment, threshold, use_clearvoice, adaptive_window, progress_callback=progress_callback)
 
         update_progress(task_id, 100, '完了!')
         add_log(task_id, '処理が完了しました!')
@@ -1470,6 +1858,165 @@ def download(task_id):
     download_name = f"{name}_processed.mp4"
 
     return send_file(output_path, as_attachment=True, download_name=download_name)
+
+
+# ==================== 話者分離API ====================
+
+@app.route('/separate_speakers', methods=['POST'])
+def separate_speakers():
+    """話者分離を実行する"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'ファイルがありません'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'ファイルが選択されていません'}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({'error': '対応していないファイル形式です'}), 400
+
+    # タスクID生成
+    task_id = str(uuid.uuid4())
+
+    # ファイル保存
+    filename = secure_filename(file.filename)
+    name, ext = os.path.splitext(filename)
+    saved_filename = f"{name}_{task_id[:8]}{ext}"
+    input_path = os.path.join(UPLOAD_FOLDER, saved_filename)
+    file.save(input_path)
+
+    # 話者ファイル用ディレクトリ
+    speaker_dir = os.path.join(OUTPUT_FOLDER, f"speakers_{task_id[:8]}")
+    os.makedirs(speaker_dir, exist_ok=True)
+
+    # ステータス初期化
+    processing_status[task_id] = {
+        'status': 'separating',
+        'progress': 0,
+        'step': '話者分離を開始中...',
+        'logs': [],
+        'input': input_path,
+        'speaker_dir': speaker_dir,
+        'original_filename': filename
+    }
+
+    def add_log(task_id, message):
+        processing_status[task_id]['logs'].append(message)
+
+    def separate_task(task_id, input_path, speaker_dir):
+        try:
+            def progress_callback(step, message):
+                add_log(task_id, message)
+                processing_status[task_id]['step'] = message
+
+            result = separate_speakers_to_files(
+                input_path,
+                speaker_dir,
+                progress_callback
+            )
+
+            processing_status[task_id]['status'] = 'separated'
+            processing_status[task_id]['speakers'] = result['speakers']
+            processing_status[task_id]['step'] = '話者分離完了'
+
+        except Exception as e:
+            processing_status[task_id]['status'] = 'error'
+            processing_status[task_id]['error'] = str(e)
+            processing_status[task_id]['traceback'] = traceback.format_exc()
+
+    # バックグラウンド実行
+    thread = threading.Thread(
+        target=separate_task,
+        args=(task_id, input_path, speaker_dir),
+        daemon=True
+    )
+    thread.start()
+
+    return jsonify({'task_id': task_id})
+
+
+@app.route('/speaker_audio/<task_id>/<int:speaker_id>')
+def speaker_audio(task_id, speaker_id):
+    """分離された話者の音声ファイルを返す"""
+    if task_id not in processing_status:
+        return jsonify({'error': 'タスクが見つかりません'}), 404
+
+    task = processing_status[task_id]
+    speaker_dir = task.get('speaker_dir')
+
+    if not speaker_dir:
+        return jsonify({'error': '話者ディレクトリが見つかりません'}), 404
+
+    speaker_file = os.path.join(speaker_dir, f"speaker_{speaker_id}.wav")
+    if not os.path.exists(speaker_file):
+        return jsonify({'error': '話者ファイルが見つかりません'}), 404
+
+    return send_file(speaker_file, mimetype='audio/wav')
+
+
+@app.route('/process_selected_speakers', methods=['POST'])
+def process_selected_speakers_api():
+    """選択された話者をピッチダウンして動画を出力する"""
+    data = request.get_json()
+    task_id = data.get('task_id')
+    male_speaker_ids = data.get('male_speaker_ids', [])
+    pitch = float(data.get('pitch', -3.0))
+
+    if not task_id or task_id not in processing_status:
+        return jsonify({'error': 'タスクが見つかりません'}), 400
+
+    task = processing_status[task_id]
+    input_path = task.get('input')
+    speaker_dir = task.get('speaker_dir')
+    original_filename = task.get('original_filename', 'output.mp4')
+
+    if not input_path or not speaker_dir:
+        return jsonify({'error': '入力ファイルが見つかりません'}), 400
+
+    # 出力パス
+    name, _ = os.path.splitext(original_filename)
+    output_filename = f"{name}_{task_id[:8]}_processed.mp4"
+    output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+
+    processing_status[task_id]['status'] = 'processing'
+    processing_status[task_id]['output'] = output_path
+    processing_status[task_id]['step'] = '処理を開始中...'
+
+    def add_log(task_id, message):
+        processing_status[task_id]['logs'].append(message)
+
+    def process_task(task_id, input_path, output_path, speaker_dir, male_speaker_ids, pitch):
+        try:
+            def progress_callback(step, message):
+                add_log(task_id, message)
+                processing_status[task_id]['step'] = message
+
+            process_with_selected_speakers(
+                input_path,
+                output_path,
+                speaker_dir,
+                male_speaker_ids,
+                pitch,
+                progress_callback
+            )
+
+            processing_status[task_id]['status'] = 'complete'
+            processing_status[task_id]['step'] = '処理完了'
+
+        except Exception as e:
+            processing_status[task_id]['status'] = 'error'
+            processing_status[task_id]['error'] = str(e)
+            processing_status[task_id]['traceback'] = traceback.format_exc()
+
+    # バックグラウンド実行
+    thread = threading.Thread(
+        target=process_task,
+        args=(task_id, input_path, output_path, speaker_dir, male_speaker_ids, pitch),
+        daemon=True
+    )
+    thread.start()
+
+    return jsonify({'status': 'processing'})
 
 
 if __name__ == '__main__':

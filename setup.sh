@@ -70,14 +70,24 @@ else
     echo "ffmpegを確認しました"
 fi
 
-# 依存パッケージのインストール
+# スクリプトのディレクトリに移動
+cd "$(dirname "$0")"
+
+# 仮想環境の作成とパッケージのインストール
 echo
-echo "[4/4] 依存パッケージをインストール中..."
+echo "[4/4] 仮想環境を作成し依存パッケージをインストール中..."
 echo "（初回は5-10分かかることがあります）"
 echo
 
-pip3 install --upgrade pip
-pip3 install -r requirements.txt
+# 仮想環境を作成
+python3 -m venv venv
+source venv/bin/activate
+
+# numpy 1.x をインストール（torch互換性のため）
+pip install --upgrade pip
+pip install numpy==1.26.4
+pip install -r requirements.txt
+pip install clearvoice
 
 if [ $? -ne 0 ]; then
     echo
