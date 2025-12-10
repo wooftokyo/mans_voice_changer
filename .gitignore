@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# アップロード・出力フォルダ（動画ファイル）
+uploads/
+output/
+
+# チェックポイント（AIモデル）
+checkpoints/
+
+# IDEの設定
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ログ
+*.log
