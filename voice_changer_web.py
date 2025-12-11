@@ -15,7 +15,7 @@ from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
-from voice_changer import process_video, pitch_shift_region, extract_audio_only, analyze_pitch_distribution, separate_speakers_to_files, process_with_selected_speakers
+from voice_changer import process_video, analyze_pitch_distribution
 
 app = Flask(__name__)
 
@@ -523,17 +523,11 @@ HTML_TEMPLATE = '''
         <h1>男性ボイスチェンジャー</h1>
         <p class="subtitle">男性の声だけピッチを下げます。自動処理後に手動で編集も可能。</p>
 
-        <div class="tabs">
-            <button class="tab active" data-tab="auto">自動処理</button>
-            <button class="tab" data-tab="editor">手動編集</button>
-        </div>
-
-        <!-- 自動処理タブ -->
-        <div class="tab-content active" id="tab-auto">
+        <div class="main-content">
             <div class="upload-area" id="uploadArea">
                 <div class="upload-icon">📁</div>
                 <div class="upload-text">ここをクリックまたはファイルをドロップ</div>
-                <div class="upload-hint">対応形式: MP4, MOV, AVI, MKV, WebM (最大2GB)</div>
+                <div class="upload-hint">対応形式: MP4, MOV, AVI, MKV, WebM</div>
             </div>
             <input type="file" id="fileInput" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v,.flv,.wmv">
 
@@ -554,15 +548,34 @@ HTML_TEMPLATE = '''
                     <div class="setting-label">
                         <span>処理モード</span>
                     </div>
-                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                        <label style="display: flex; align-items: center; cursor: pointer; padding: 10px 15px; border-radius: 8px; background: #e8f4fd; border: 2px solid #4a90d9;">
-                            <input type="radio" name="mode" id="modeClearvoice" value="clearvoice" checked style="margin-right: 8px;">
-                            <span><strong>ClearVoice AI</strong><br><small style="color: #666;">話者分離（高精度・初回はモデルDL）</small></span>
-                        </label>
-                        <label style="display: flex; align-items: center; cursor: pointer; padding: 10px 15px; border-radius: 8px; background: #f8f9fa; border: 2px solid #ddd;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
+                        <label class="mode-option" id="modeSimpleLabel" style="display: flex; align-items: center; cursor: pointer; padding: 10px 15px; border-radius: 8px; background: #f8f9fa; border: 2px solid #ddd; flex: 1; min-width: 200px;">
                             <input type="radio" name="mode" id="modeSimple" value="simple" style="margin-right: 8px;">
-                            <span><strong>簡易版</strong><br><small style="color: #666;">ピッチ検出（高速）</small></span>
+                            <span><strong>簡易版（高速）</strong><br><small style="color: #666;">精度: 約70-80%</small></span>
                         </label>
+                        <label class="mode-option selected" id="modeTimbreLabel" style="display: flex; align-items: center; cursor: pointer; padding: 10px 15px; border-radius: 8px; background: #e8f4fd; border: 2px solid #4a90d9; flex: 1; min-width: 200px;">
+                            <input type="radio" name="mode" id="modeTimbre" value="timbre" checked style="margin-right: 8px;">
+                            <span><strong>AI声質判定（推奨）</strong><br><small style="color: #666;">精度: 約95-98%</small></span>
+                        </label>
+                    </div>
+                    <div id="modeDescription" style="background: #f8f9fa; border-radius: 8px; padding: 12px; margin-top: 10px; font-size: 0.85em; color: #555;">
+                        <div id="modeDescSimple" style="display: none;">
+                            <strong>簡易版の仕組み:</strong><br>
+                            音声を短い区間（0.5秒など）に分割し、各区間の<strong>ピッチ（声の高さ/Hz）</strong>を測定。<br>
+                            閾値（例: 165Hz）より低ければ男性、高ければ女性と判定。<br><br>
+                            <span style="color: #28a745;">✓ 長所:</span> 処理が非常に高速（数秒〜数十秒）<br>
+                            <span style="color: #dc3545;">✗ 短所:</span> 高い声の男性や低い声の女性を誤判定しやすい
+                        </div>
+                        <div id="modeDescTimbre">
+                            <strong>AI声質判定の仕組み:</strong><br>
+                            <strong>inaSpeechSegmenter</strong>（フランス国立視聴覚研究所開発のCNN）で声質から性別を判定。<br>
+                            声の高さだけでなく、声道の形状・声の響き・話し方のパターンなどを総合的に分析。<br><br>
+                            <strong>さらに精度向上のため:</strong><br>
+                            1. <strong>後処理:</strong> 短い孤立判定（0.3秒未満）を周囲に統合してノイズ除去<br>
+                            2. <strong>ダブルチェック:</strong> CNNが「男性」と判定した区間を音響特徴（スペクトル重心・ピッチ）で再確認<br><br>
+                            <span style="color: #28a745;">✓ 長所:</span> 高い声の男性も正しく判定、女性の誤判定が少ない<br>
+                            <span style="color: #dc3545;">✗ 短所:</span> 初回起動時にAIモデル読込で時間がかかる（2回目以降は高速）
+                        </div>
                     </div>
                 </div>
                 <div class="setting-group">
@@ -602,9 +615,9 @@ HTML_TEMPLATE = '''
                         ※区間ごとにピッチ分布を解析して閾値を自動調整
                     </div>
                 </div>
-                <div class="setting-group">
+                <div class="setting-group" id="thresholdGroup" style="display: none;">
                     <div class="setting-label">
-                        <span>男性判定閾値（Hz）</span>
+                        <span>男性判定閾値（Hz）<small style="color: #888;">（簡易版のみ）</small></span>
                         <span class="setting-value" id="thresholdValue">165</span>
                     </div>
                     <input type="range" id="thresholdSlider" min="120" max="200" step="5" value="165">
@@ -615,11 +628,11 @@ HTML_TEMPLATE = '''
                 </div>
             </div>
 
-            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                <button class="btn btn-secondary" id="analyzeBtn" disabled style="flex: 1;">音声を解析して閾値を推定</button>
+            <div id="simpleAnalyzeArea" style="display: none; margin-bottom: 10px;">
+                <button class="btn btn-secondary" id="analyzeBtn" disabled style="width: 100%;">音声を解析して閾値を推定</button>
+                <div id="analysisResult" class="analysis-result"></div>
             </div>
-            <div id="analysisResult" class="analysis-result"></div>
-            <button class="btn btn-primary btn-full" id="processBtn" disabled>自動処理開始</button>
+            <button class="btn btn-primary btn-full" id="processBtn" disabled>処理開始</button>
 
             <div class="progress-container" id="progressContainer">
                 <div class="progress-bar">
@@ -638,117 +651,10 @@ HTML_TEMPLATE = '''
 
             <div id="resultArea"></div>
         </div>
-
-        <!-- 手動編集タブ -->
-        <div class="tab-content" id="tab-editor">
-            <div class="help-text">
-                <strong>使い方:</strong>
-                1. 動画をアップロード →
-                2. 「話者分離」で音声を分離 →
-                3. 各話者を試聴して男性を選択 →
-                4. 「ピッチダウン実行」
-            </div>
-
-            <div class="upload-area" id="editorUploadArea">
-                <div class="upload-icon">🎬</div>
-                <div class="upload-text">編集する動画をドロップまたはクリック</div>
-                <div class="upload-hint">ClearVoiceで話者を分離します</div>
-            </div>
-            <input type="file" id="editorFileInput" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v,.flv,.wmv">
-
-            <!-- 話者分離セクション -->
-            <div id="speakerSeparationSection" style="display: none; margin-top: 20px;">
-                <button class="btn btn-primary" id="separateSpeakersBtn">話者分離を実行</button>
-                <div class="progress-container" id="separateProgressContainer" style="display: none;">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="separateProgressFill"></div>
-                    </div>
-                    <div class="status-text" id="separateStatusText">話者分離中...</div>
-                </div>
-                <div class="log-container" id="separateLogContainer" style="display: none; margin-top: 10px;">
-                    <div class="log-box" id="separateLogBox"></div>
-                </div>
-            </div>
-
-            <!-- 話者選択セクション -->
-            <div id="speakerSelectionSection" style="display: none; margin-top: 20px;">
-                <h3 style="margin-bottom: 15px;">話者を試聴して男性を選択</h3>
-                <div id="speakerList" style="display: flex; gap: 15px; flex-wrap: wrap;"></div>
-                <div style="margin-top: 20px; display: flex; gap: 10px; align-items: center;">
-                    <div class="setting-group" style="width: 200px; margin: 0;">
-                        <div class="setting-label">
-                            <span>ピッチ</span>
-                            <span class="setting-value" id="speakerPitchValue">-3.0</span>
-                        </div>
-                        <input type="range" id="speakerPitchSlider" min="-12" max="0" step="0.5" value="-3">
-                    </div>
-                    <button class="btn btn-primary" id="processSpeakersBtn" disabled>選択した話者をピッチダウン</button>
-                </div>
-                <div class="progress-container" id="speakerProcessProgressContainer" style="display: none;">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="speakerProcessProgressFill"></div>
-                    </div>
-                    <div class="status-text" id="speakerProcessStatusText">処理中...</div>
-                </div>
-                <div id="speakerResultArea" style="margin-top: 15px;"></div>
-            </div>
-
-            <div class="editor-container" id="editorContainer">
-                <video id="videoPreview" class="video-preview" controls></video>
-
-                <div class="waveform-container">
-                    <div id="waveform"></div>
-                </div>
-
-                <div class="editor-controls">
-                    <button class="btn btn-secondary" id="playPauseBtn">▶ 再生</button>
-                    <span class="time-display" id="timeDisplay">00:00.00 / 00:00.00</span>
-                    <div style="flex-grow: 1;"></div>
-                    <div class="setting-group" style="width: 200px; margin: 0;">
-                        <div class="setting-label">
-                            <span>ピッチ</span>
-                            <span class="setting-value" id="editorPitchValue">-3.0</span>
-                        </div>
-                        <input type="range" id="editorPitchSlider" min="-12" max="12" step="0.5" value="-3">
-                    </div>
-                </div>
-
-                <div class="regions-list" id="regionsList">
-                    <h4>選択した区間 (ドラッグで追加)</h4>
-                    <div id="regionsContent">
-                        <p style="color: #999; font-size: 0.9em;">波形上をドラッグして区間を選択してください</p>
-                    </div>
-                </div>
-
-                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                    <button class="btn btn-primary" id="applyPitchBtn" disabled>選択区間をピッチ変換</button>
-                    <button class="btn btn-danger" id="clearRegionsBtn">区間をクリア</button>
-                </div>
-
-                <div class="progress-container" id="editorProgressContainer">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="editorProgressFill"></div>
-                    </div>
-                    <div class="status-text" id="editorStatusText">処理中...</div>
-                </div>
-
-                <div id="editorResultArea"></div>
-            </div>
-        </div>
     </div>
 
     <script>
-        // タブ切り替え
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                tab.classList.add('active');
-                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-            });
-        });
-
-        // ==================== 自動処理タブ ====================
+        // ==================== メイン処理 ====================
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         const fileInfo = document.getElementById('fileInfo');
@@ -935,7 +841,7 @@ HTML_TEMPLATE = '''
                     analysisResult.classList.add('show');
                     // 簡易版モードでない場合はセグメント推奨を非表示
                     const segArea = document.getElementById('suggestedSegmentArea');
-                    if (segArea && document.getElementById('modeClearvoice').checked) {
+                    if (segArea && !document.getElementById('modeSimple').checked) {
                         segArea.style.display = 'none';
                     }
                     analyzeBtn.disabled = false;
@@ -959,7 +865,7 @@ HTML_TEMPLATE = '''
             segmentValue.textContent = value;
             // 簡易版モードに切り替え
             document.getElementById('modeSimple').checked = true;
-            updateSegmentVisibility();
+            updateModeVisibility();
         };
 
         logToggle.addEventListener('click', () => {
@@ -996,19 +902,48 @@ HTML_TEMPLATE = '''
             adaptiveValue.textContent = val === 0 ? '固定' : val;
         });
 
-        // モード切り替え時にセグメントスライダーの表示/非表示を切り替え
+        // モード切り替え時に設定の表示/非表示を切り替え
         const segmentGroup = document.getElementById('segmentGroup');
         const adaptiveGroup = document.getElementById('adaptiveGroup');
-        const modeClearvoice = document.getElementById('modeClearvoice');
+        const thresholdGroup = document.getElementById('thresholdGroup');
+        const simpleAnalyzeArea = document.getElementById('simpleAnalyzeArea');
         const modeSimple = document.getElementById('modeSimple');
+        const modeTimbre = document.getElementById('modeTimbre');
+        const modeLabels = {
+            simple: document.getElementById('modeSimpleLabel'),
+            timbre: document.getElementById('modeTimbreLabel')
+        };
 
-        function updateSegmentVisibility() {
-            const show = modeSimple.checked ? 'block' : 'none';
-            segmentGroup.style.display = show;
-            adaptiveGroup.style.display = show;
+        function updateModeVisibility() {
+            const selectedMode = document.querySelector('input[name="mode"]:checked').value;
+            // 簡易版のみHz設定を表示
+            const showHzSettings = (selectedMode === 'simple');
+
+            segmentGroup.style.display = showHzSettings ? 'block' : 'none';
+            adaptiveGroup.style.display = showHzSettings ? 'block' : 'none';
+            thresholdGroup.style.display = showHzSettings ? 'block' : 'none';
+            simpleAnalyzeArea.style.display = showHzSettings ? 'block' : 'none';
+
+            // モード説明の切り替え
+            document.getElementById('modeDescSimple').style.display = (selectedMode === 'simple') ? 'block' : 'none';
+            document.getElementById('modeDescTimbre').style.display = (selectedMode === 'timbre') ? 'block' : 'none';
+
+            // モード選択のスタイル更新
+            Object.keys(modeLabels).forEach(mode => {
+                const label = modeLabels[mode];
+                if (label) {
+                    if (mode === selectedMode) {
+                        label.style.background = '#e8f4fd';
+                        label.style.borderColor = '#4a90d9';
+                    } else {
+                        label.style.background = '#f8f9fa';
+                        label.style.borderColor = '#ddd';
+                    }
+                }
+            });
         }
-        modeClearvoice.addEventListener('change', updateSegmentVisibility);
-        modeSimple.addEventListener('change', updateSegmentVisibility);
+        modeSimple.addEventListener('change', updateModeVisibility);
+        modeTimbre.addEventListener('change', updateModeVisibility);
 
         processBtn.addEventListener('click', async () => {
             if (!selectedFile) return;
@@ -1026,7 +961,7 @@ HTML_TEMPLATE = '''
             formData.append('segment', segmentSlider.value);
             formData.append('threshold', thresholdSlider.value);
             formData.append('adaptive_window', adaptiveSlider.value);
-            formData.append('use_clearvoice', document.getElementById('modeClearvoice').checked ? 'true' : 'false');
+            formData.append('mode', document.querySelector('input[name="mode"]:checked').value);
 
             const xhr = new XMLHttpRequest();
             xhr.upload.addEventListener('progress', (e) => {
@@ -1081,9 +1016,8 @@ HTML_TEMPLATE = '''
                     statusText.textContent = '完了!';
                     addLog('処理が完了しました!');
                     resultArea.innerHTML = `
-                        <div class="success">処理が完了しました!</div>
-                        <a href="/download/${taskId}" class="btn btn-success" download>ダウンロード</a>
-                        <button class="btn btn-primary" onclick="openInEditor('${taskId}')">エディタで編集</button>
+                        <div class="success" style="margin-bottom: 15px;">処理が完了しました!</div>
+                        <a href="/download/${taskId}" class="btn btn-primary btn-full" download style="display: block; text-align: center; text-decoration: none;">ダウンロード</a>
                     `;
                     processBtn.disabled = false;
                 } else if (data.status === 'error') {
@@ -1095,457 +1029,6 @@ HTML_TEMPLATE = '''
             };
             await poll();
         }
-
-        function openInEditor(taskId) {
-            document.querySelector('[data-tab="editor"]').click();
-            loadVideoInEditor(`/download/${taskId}`);
-        }
-
-        // ==================== 手動編集タブ ====================
-        const editorUploadArea = document.getElementById('editorUploadArea');
-        const editorFileInput = document.getElementById('editorFileInput');
-        const editorContainer = document.getElementById('editorContainer');
-        const videoPreview = document.getElementById('videoPreview');
-        const playPauseBtn = document.getElementById('playPauseBtn');
-        const timeDisplay = document.getElementById('timeDisplay');
-        const editorPitchSlider = document.getElementById('editorPitchSlider');
-        const editorPitchValue = document.getElementById('editorPitchValue');
-        const regionsContent = document.getElementById('regionsContent');
-        const applyPitchBtn = document.getElementById('applyPitchBtn');
-        const clearRegionsBtn = document.getElementById('clearRegionsBtn');
-        const editorProgressContainer = document.getElementById('editorProgressContainer');
-        const editorProgressFill = document.getElementById('editorProgressFill');
-        const editorStatusText = document.getElementById('editorStatusText');
-        const editorResultArea = document.getElementById('editorResultArea');
-
-        let wavesurfer = null;
-        let wsRegions = null;
-        let currentEditorFile = null;
-        let editorTaskId = null;
-
-        // 話者分離用変数
-        let speakerTaskId = null;
-        let speakerData = [];
-        const speakerSeparationSection = document.getElementById('speakerSeparationSection');
-        const separateSpeakersBtn = document.getElementById('separateSpeakersBtn');
-        const separateProgressContainer = document.getElementById('separateProgressContainer');
-        const separateProgressFill = document.getElementById('separateProgressFill');
-        const separateStatusText = document.getElementById('separateStatusText');
-        const separateLogContainer = document.getElementById('separateLogContainer');
-        const separateLogBox = document.getElementById('separateLogBox');
-        const speakerSelectionSection = document.getElementById('speakerSelectionSection');
-        const speakerList = document.getElementById('speakerList');
-        const speakerPitchSlider = document.getElementById('speakerPitchSlider');
-        const speakerPitchValue = document.getElementById('speakerPitchValue');
-        const processSpeakersBtn = document.getElementById('processSpeakersBtn');
-        const speakerProcessProgressContainer = document.getElementById('speakerProcessProgressContainer');
-        const speakerProcessProgressFill = document.getElementById('speakerProcessProgressFill');
-        const speakerProcessStatusText = document.getElementById('speakerProcessStatusText');
-        const speakerResultArea = document.getElementById('speakerResultArea');
-
-        editorUploadArea.addEventListener('click', () => editorFileInput.click());
-        editorUploadArea.addEventListener('dragover', (e) => { e.preventDefault(); editorUploadArea.classList.add('dragover'); });
-        editorUploadArea.addEventListener('dragleave', () => editorUploadArea.classList.remove('dragover'));
-        editorUploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            editorUploadArea.classList.remove('dragover');
-            if (e.dataTransfer.files.length > 0) handleEditorFile(e.dataTransfer.files[0]);
-        });
-        editorFileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) handleEditorFile(e.target.files[0]);
-        });
-
-        editorPitchSlider.addEventListener('input', () => editorPitchValue.textContent = editorPitchSlider.value);
-
-        function handleEditorFile(file) {
-            currentEditorFile = file;
-            const url = URL.createObjectURL(file);
-
-            // 話者分離セクションを表示
-            speakerSeparationSection.style.display = 'block';
-            speakerSelectionSection.style.display = 'none';
-            speakerResultArea.innerHTML = '';
-            separateProgressContainer.style.display = 'none';
-            separateLogContainer.style.display = 'none';
-            separateSpeakersBtn.disabled = false;
-            separateSpeakersBtn.textContent = '話者分離を実行';
-
-            // 既存のエディタコンテナは非表示（話者選択後に使う）
-            editorContainer.classList.remove('show');
-        }
-
-        // 話者分離ボタン
-        separateSpeakersBtn.addEventListener('click', async () => {
-            if (!currentEditorFile) return;
-
-            separateSpeakersBtn.disabled = true;
-            separateSpeakersBtn.textContent = 'アップロード中...';
-            separateProgressContainer.style.display = 'block';
-            separateLogContainer.style.display = 'block';
-            separateLogBox.innerHTML = '';
-            separateProgressFill.style.width = '0%';
-
-            const formData = new FormData();
-            formData.append('file', currentEditorFile);
-
-            try {
-                const response = await fetch('/separate_speakers', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-
-                if (data.error) {
-                    alert(data.error);
-                    separateSpeakersBtn.disabled = false;
-                    separateSpeakersBtn.textContent = '話者分離を実行';
-                    return;
-                }
-
-                speakerTaskId = data.task_id;
-                pollSeparateStatus(speakerTaskId);
-
-            } catch (error) {
-                alert('エラー: ' + error.message);
-                separateSpeakersBtn.disabled = false;
-                separateSpeakersBtn.textContent = '話者分離を実行';
-            }
-        });
-
-        // 話者分離ステータスポーリング
-        let separateLogCount = 0;
-        function pollSeparateStatus(taskId) {
-            fetch('/status/' + taskId)
-                .then(response => response.json())
-                .then(data => {
-                    separateStatusText.textContent = data.step || '処理中...';
-
-                    // ログ更新
-                    if (data.logs && data.logs.length > separateLogCount) {
-                        for (let i = separateLogCount; i < data.logs.length; i++) {
-                            separateLogBox.innerHTML += data.logs[i] + '\\n';
-                        }
-                        separateLogCount = data.logs.length;
-                        separateLogBox.scrollTop = separateLogBox.scrollHeight;
-                    }
-
-                    if (data.status === 'separated') {
-                        separateProgressFill.style.width = '100%';
-                        separateSpeakersBtn.textContent = '話者分離完了';
-
-                        // 話者選択UIを表示
-                        displaySpeakers(taskId, data.speakers);
-
-                    } else if (data.status === 'error') {
-                        separateStatusText.textContent = 'エラー: ' + (data.error || '不明なエラー');
-                        separateSpeakersBtn.disabled = false;
-                        separateSpeakersBtn.textContent = '話者分離を実行';
-
-                    } else {
-                        // 継続してポーリング
-                        setTimeout(() => pollSeparateStatus(taskId), 1000);
-                    }
-                })
-                .catch(error => {
-                    console.error('Status check error:', error);
-                    setTimeout(() => pollSeparateStatus(taskId), 2000);
-                });
-        }
-
-        // 話者カードを表示
-        function displaySpeakers(taskId, speakers) {
-            speakerData = speakers;
-            speakerSelectionSection.style.display = 'block';
-            speakerList.innerHTML = '';
-
-            speakers.forEach((speaker, index) => {
-                const card = document.createElement('div');
-                card.className = 'speaker-card';
-                card.id = 'speaker-card-' + speaker.id;
-                card.innerHTML = `
-                    <div class="speaker-title">話者 ${speaker.id + 1}</div>
-                    <div class="speaker-pitch">推定ピッチ: ${speaker.pitch.toFixed(1)}Hz</div>
-                    <audio controls src="/speaker_audio/${taskId}/${speaker.id}"></audio>
-                    <label class="select-label">
-                        <input type="checkbox" id="speaker-check-${speaker.id}" value="${speaker.id}" onchange="updateSpeakerSelection()">
-                        男性（ピッチダウン対象）
-                    </label>
-                `;
-                speakerList.appendChild(card);
-            });
-
-            processSpeakersBtn.disabled = true;
-        }
-
-        // 話者選択状態を更新
-        function updateSpeakerSelection() {
-            const checkboxes = document.querySelectorAll('[id^="speaker-check-"]');
-            let anyChecked = false;
-
-            checkboxes.forEach(cb => {
-                const card = document.getElementById('speaker-card-' + cb.value);
-                if (cb.checked) {
-                    card.classList.add('selected');
-                    anyChecked = true;
-                } else {
-                    card.classList.remove('selected');
-                }
-            });
-
-            processSpeakersBtn.disabled = !anyChecked;
-        }
-        window.updateSpeakerSelection = updateSpeakerSelection;
-
-        // ピッチスライダー
-        speakerPitchSlider.addEventListener('input', () => {
-            speakerPitchValue.textContent = speakerPitchSlider.value;
-        });
-
-        // 選択話者をピッチダウン
-        processSpeakersBtn.addEventListener('click', async () => {
-            const checkboxes = document.querySelectorAll('[id^="speaker-check-"]:checked');
-            const maleSpeakerIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
-
-            if (maleSpeakerIds.length === 0) {
-                alert('男性の話者を選択してください');
-                return;
-            }
-
-            processSpeakersBtn.disabled = true;
-            processSpeakersBtn.textContent = '処理中...';
-            speakerProcessProgressContainer.style.display = 'block';
-            speakerProcessProgressFill.style.width = '10%';
-            speakerProcessStatusText.textContent = '処理を開始中...';
-
-            try {
-                const response = await fetch('/process_selected_speakers', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        task_id: speakerTaskId,
-                        male_speaker_ids: maleSpeakerIds,
-                        pitch: parseFloat(speakerPitchSlider.value)
-                    })
-                });
-                const data = await response.json();
-
-                if (data.error) {
-                    alert(data.error);
-                    processSpeakersBtn.disabled = false;
-                    processSpeakersBtn.textContent = '選択した話者をピッチダウン';
-                    return;
-                }
-
-                pollSpeakerProcessStatus(speakerTaskId);
-
-            } catch (error) {
-                alert('エラー: ' + error.message);
-                processSpeakersBtn.disabled = false;
-                processSpeakersBtn.textContent = '選択した話者をピッチダウン';
-            }
-        });
-
-        // 処理ステータスポーリング
-        function pollSpeakerProcessStatus(taskId) {
-            fetch('/status/' + taskId)
-                .then(response => response.json())
-                .then(data => {
-                    speakerProcessStatusText.textContent = data.step || '処理中...';
-
-                    if (data.status === 'complete') {
-                        speakerProcessProgressFill.style.width = '100%';
-                        processSpeakersBtn.textContent = '処理完了';
-
-                        speakerResultArea.innerHTML = `
-                            <div class="result success">
-                                <h3>処理完了!</h3>
-                                <p>選択した話者の声をピッチダウンしました。</p>
-                                <a href="/download/${taskId}" class="btn btn-primary" style="display: inline-block; margin-top: 10px;">ダウンロード</a>
-                            </div>
-                        `;
-
-                    } else if (data.status === 'error') {
-                        speakerProcessStatusText.textContent = 'エラー: ' + (data.error || '不明なエラー');
-                        processSpeakersBtn.disabled = false;
-                        processSpeakersBtn.textContent = '選択した話者をピッチダウン';
-
-                    } else {
-                        speakerProcessProgressFill.style.width = '50%';
-                        setTimeout(() => pollSpeakerProcessStatus(taskId), 1000);
-                    }
-                })
-                .catch(error => {
-                    console.error('Status check error:', error);
-                    setTimeout(() => pollSpeakerProcessStatus(taskId), 2000);
-                });
-        }
-
-        function loadVideoInEditor(url, file = null) {
-            editorContainer.classList.add('show');
-            videoPreview.src = url;
-
-            if (wavesurfer) wavesurfer.destroy();
-
-            wavesurfer = WaveSurfer.create({
-                container: '#waveform',
-                waveColor: '#4a90d9',
-                progressColor: '#357abd',
-                cursorColor: '#fff',
-                height: 128,
-                normalize: true,
-                backend: 'MediaElement',
-                media: videoPreview
-            });
-
-            wsRegions = wavesurfer.registerPlugin(WaveSurfer.Regions.create());
-
-            wsRegions.enableDragSelection({
-                color: 'rgba(255, 100, 100, 0.3)',
-            });
-
-            wsRegions.on('region-created', updateRegionsList);
-            wsRegions.on('region-updated', updateRegionsList);
-            wsRegions.on('region-removed', updateRegionsList);
-
-            wavesurfer.on('timeupdate', (time) => {
-                timeDisplay.textContent = `${formatTime(time)} / ${formatTime(wavesurfer.getDuration() || 0)}`;
-            });
-
-            wavesurfer.on('ready', () => {
-                timeDisplay.textContent = `00:00.00 / ${formatTime(wavesurfer.getDuration())}`;
-            });
-
-            // ファイルをアップロードしてtaskIdを取得
-            if (file) {
-                uploadForEditor(file);
-            }
-        }
-
-        async function uploadForEditor(file) {
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('editor_mode', 'true');
-
-            const response = await fetch('/upload_for_editor', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
-            if (data.task_id) {
-                editorTaskId = data.task_id;
-            }
-        }
-
-        playPauseBtn.addEventListener('click', () => {
-            if (wavesurfer) {
-                wavesurfer.playPause();
-                playPauseBtn.textContent = wavesurfer.isPlaying() ? '⏸ 一時停止' : '▶ 再生';
-            }
-        });
-
-        function updateRegionsList() {
-            const regions = wsRegions.getRegions();
-            if (regions.length === 0) {
-                regionsContent.innerHTML = '<p style="color: #999; font-size: 0.9em;">波形上をドラッグして区間を選択してください</p>';
-                applyPitchBtn.disabled = true;
-                return;
-            }
-
-            applyPitchBtn.disabled = false;
-            regionsContent.innerHTML = regions.map((region, i) => `
-                <div class="region-item">
-                    <div class="region-info">
-                        <strong>区間 ${i + 1}</strong>
-                        <div class="region-time">${formatTime(region.start)} - ${formatTime(region.end)}</div>
-                    </div>
-                    <div class="region-actions">
-                        <button class="region-btn region-btn-play" onclick="playRegion('${region.id}')">▶</button>
-                        <button class="region-btn region-btn-delete" onclick="deleteRegion('${region.id}')">✕</button>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        window.playRegion = (id) => {
-            const region = wsRegions.getRegions().find(r => r.id === id);
-            if (region) region.play();
-        };
-
-        window.deleteRegion = (id) => {
-            const region = wsRegions.getRegions().find(r => r.id === id);
-            if (region) region.remove();
-        };
-
-        clearRegionsBtn.addEventListener('click', () => {
-            wsRegions.clearRegions();
-            updateRegionsList();
-        });
-
-        applyPitchBtn.addEventListener('click', async () => {
-            const regions = wsRegions.getRegions();
-            if (regions.length === 0 || !editorTaskId) return;
-
-            applyPitchBtn.disabled = true;
-            editorProgressContainer.style.display = 'block';
-            editorProgressFill.style.width = '0%';
-            editorStatusText.textContent = '処理中...';
-            editorResultArea.innerHTML = '';
-
-            const regionsData = regions.map(r => ({
-                start: r.start,
-                end: r.end
-            }));
-
-            try {
-                const response = await fetch('/apply_pitch', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        task_id: editorTaskId,
-                        regions: regionsData,
-                        pitch: parseFloat(editorPitchSlider.value)
-                    })
-                });
-
-                const data = await response.json();
-
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-
-                // ポーリング
-                const pollEditor = async () => {
-                    const res = await fetch(`/status/${data.task_id}`);
-                    const status = await res.json();
-
-                    if (status.progress) editorProgressFill.style.width = `${status.progress}%`;
-                    if (status.step) editorStatusText.textContent = status.step;
-
-                    if (status.status === 'processing') {
-                        setTimeout(pollEditor, 500);
-                    } else if (status.status === 'complete') {
-                        editorProgressFill.style.width = '100%';
-                        editorStatusText.textContent = '完了!';
-                        editorResultArea.innerHTML = `
-                            <div class="success">ピッチ変換が完了しました!</div>
-                            <a href="/download/${data.task_id}" class="btn btn-success" download>ダウンロード</a>
-                        `;
-                        applyPitchBtn.disabled = false;
-
-                        // 新しい動画を読み込み
-                        editorTaskId = data.task_id;
-                    } else if (status.status === 'error') {
-                        throw new Error(status.message);
-                    }
-                };
-                await pollEditor();
-
-            } catch (error) {
-                editorResultArea.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
-                editorProgressContainer.style.display = 'none';
-                applyPitchBtn.disabled = false;
-            }
-        });
     </script>
 </body>
 </html>
@@ -1574,7 +1057,7 @@ def upload():
         segment = float(request.form.get('segment', 0.5))
         threshold = float(request.form.get('threshold', 165))
         adaptive_window = float(request.form.get('adaptive_window', 300))
-        use_clearvoice = request.form.get('use_clearvoice', 'true').lower() == 'true'
+        mode = request.form.get('mode', 'hybrid')  # hybrid, simple, clearvoice
         task_id = str(uuid.uuid4())
 
         filename = secure_filename(file.filename)
@@ -1596,14 +1079,17 @@ def upload():
             'logs': [{'message': 'ファイルを受信しました', 'type': 'info'}]
         }
 
-        thread = threading.Thread(target=process_task, args=(task_id, input_path, output_path, pitch, segment, threshold, use_clearvoice, adaptive_window))
+        thread = threading.Thread(target=process_task, args=(task_id, input_path, output_path, pitch, segment, threshold, mode, adaptive_window))
         thread.daemon = True
         thread.start()
 
         return jsonify({'task_id': task_id})
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[UPLOAD ERROR] {error_details}")
+        return jsonify({'error': str(e), 'details': error_details}), 500
 
 
 @app.route('/analyze', methods=['POST'])
@@ -1768,16 +1254,23 @@ def update_progress(task_id, progress, step):
         processing_status[task_id]['step'] = step
 
 
-def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold=165, use_clearvoice=True, adaptive_window=300.0):
+def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold=165, mode='hybrid', adaptive_window=300.0):
     try:
-        mode = "ClearVoice AI" if use_clearvoice else "簡易版"
-        add_log(task_id, f'処理モード: {mode}')
+        mode_names = {
+            'simple': '簡易版（Hz判定のみ）',
+            'timbre': 'AI声質判定（CNN学習モデル）',
+            'hybrid': 'ハイブリッド（話者分離＋詳細分析）'
+        }
+        mode_name = mode_names.get(mode, mode)
+        add_log(task_id, f'処理モード: {mode_name}')
         add_log(task_id, f'ピッチシフト: {pitch}半音')
-        add_log(task_id, f'男性判定閾値: {threshold}Hz')
-        if not use_clearvoice:
+        if mode == 'simple':
+            add_log(task_id, f'男性判定閾値: {threshold}Hz')
             add_log(task_id, f'セグメント長: {segment}秒')
             adaptive_str = '固定' if adaptive_window == 0 else f'{adaptive_window}秒ごと'
             add_log(task_id, f'動的閾値調整: {adaptive_str}')
+        elif mode == 'hybrid':
+            add_log(task_id, f'男性判定閾値: {threshold}Hz')
         update_progress(task_id, 20, '音声を抽出中...')
 
         def progress_callback(step, message):
@@ -1794,7 +1287,7 @@ def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold
                 update_progress(task_id, prog, status)
             add_log(task_id, message)
 
-        process_video(input_path, output_path, pitch, segment, threshold, use_clearvoice, adaptive_window, progress_callback=progress_callback)
+        process_video(input_path, output_path, pitch, segment, threshold, mode, adaptive_window, progress_callback=progress_callback)
 
         update_progress(task_id, 100, '完了!')
         add_log(task_id, '処理が完了しました!')

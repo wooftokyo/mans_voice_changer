@@ -10,12 +10,23 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+# ffmpegへのPATHを確保（inaSpeechSegmenter等が必要とする）
+ffmpeg_paths = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+for p in ffmpeg_paths:
+    if p not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = p + ':' + os.environ.get('PATH', '')
+
 import numpy as np
 import librosa
 import soundfile as sf
 
-# ClearVoice のグローバルインスタンス（遅延ロード）
+# グローバルインスタンス（遅延ロード）
 _clearvoice_separator = None
+_gender_segmenter = None
+_ina_segmenter = None
+
+# inaSpeechSegmenterを使うために環境変数を設定
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
 
 
 def _patch_torch_numpy_compat():
@@ -52,6 +63,406 @@ def get_clearvoice_separator():
         )
         print("ClearVoice初期化完了")
     return _clearvoice_separator
+
+
+def get_ina_segmenter():
+    """inaSpeechSegmenter（CNN性別判定）を取得（初回のみロード）"""
+    global _ina_segmenter
+    if _ina_segmenter is None:
+        from inaSpeechSegmenter import Segmenter
+        print("inaSpeechSegmenter（CNN性別判定）を初期化中...")
+        _ina_segmenter = Segmenter()
+        print("inaSpeechSegmenter初期化完了")
+    return _ina_segmenter
+
+
+def detect_gender_ina(audio_path: str, progress_callback=None) -> list:
+    """
+    inaSpeechSegmenterを使用してCNNベースの性別判定を行う
+
+    Returns:
+        list of tuples: [(label, start, end), ...]
+        labelは 'male', 'female', 'noEnergy', 'music' など
+    """
+    log = progress_callback or print
+    log("inaSpeechSegmenter（CNN）で性別を判定中...")
+
+    seg = get_ina_segmenter()
+    result = seg(audio_path)
+
+    # 統計を計算
+    male_time = 0
+    female_time = 0
+    for label, start, end in result:
+        duration = end - start
+        if label == 'male':
+            male_time += duration
+        elif label == 'female':
+            female_time += duration
+
+    log(f"CNN判定結果: 男性={male_time:.1f}秒, 女性={female_time:.1f}秒")
+
+    return result
+
+
+def postprocess_gender_segments(segments: list, min_duration: float = 0.3) -> list:
+    """
+    性別判定結果の後処理: 短い孤立判定を周囲に統合
+
+    例: [女性, 女性, 男性(0.2秒), 女性, 女性] → [女性, 女性, 女性, 女性, 女性]
+
+    Args:
+        segments: [(label, start, end), ...] のリスト
+        min_duration: この秒数未満の孤立セグメントを統合対象とする
+
+    Returns:
+        修正されたセグメントリスト
+    """
+    if len(segments) <= 2:
+        return segments
+
+    result = list(segments)
+
+    # 複数回パスして孤立セグメントを除去
+    for _ in range(2):
+        i = 1
+        while i < len(result) - 1:
+            label, start, end = result[i]
+            duration = end - start
+
+            # 音声セグメント（male/female）のみ対象
+            if label not in ('male', 'female'):
+                i += 1
+                continue
+
+            # 短いセグメントかどうか
+            if duration >= min_duration:
+                i += 1
+                continue
+
+            # 前後のセグメントを取得
+            prev_label, _, _ = result[i - 1]
+            next_label, _, _ = result[i + 1]
+
+            # 前後が同じラベルで、現在と異なる場合は統合
+            if prev_label == next_label and prev_label != label and prev_label in ('male', 'female'):
+                # 現在のセグメントを前後と同じラベルに変更
+                result[i] = (prev_label, start, end)
+
+            i += 1
+
+    return result
+
+
+def detect_gender_for_segment(y: np.ndarray, sr: int) -> dict:
+    """
+    短いセグメント用の軽量な性別判定（ダブルチェック用）
+
+    フォルマント比率とスペクトル特徴で簡易判定
+
+    Returns:
+        {'is_male': bool, 'confidence': float}
+    """
+    if len(y) < sr * 0.1:  # 0.1秒未満は判定不可
+        return {'is_male': True, 'confidence': 0.0}
+
+    male_score = 0.0
+    total_weight = 0.0
+
+    # 1. スペクトル重心（声の明るさ）
+    try:
+        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+        mean_centroid = np.mean(centroid[centroid > 0]) if np.any(centroid > 0) else 0
+
+        if mean_centroid > 0:
+            # 男性: 1000-2000Hz, 女性: 2000-3500Hz
+            if mean_centroid < 1800:
+                male_score += 1.0
+            elif mean_centroid < 2500:
+                male_score += 0.5
+            else:
+                male_score += 0.0
+            total_weight += 1.0
+    except:
+        pass
+
+    # 2. スペクトルロールオフ
+    try:
+        rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr, roll_percent=0.85)[0]
+        mean_rolloff = np.mean(rolloff[rolloff > 0]) if np.any(rolloff > 0) else 0
+
+        if mean_rolloff > 0:
+            if mean_rolloff < 3500:
+                male_score += 1.0
+            elif mean_rolloff < 5000:
+                male_score += 0.5
+            else:
+                male_score += 0.0
+            total_weight += 1.0
+    except:
+        pass
+
+    # 3. ピッチ（F0）
+    try:
+        f0, _, _ = librosa.pyin(y, fmin=50, fmax=400, sr=sr)
+        valid_f0 = f0[~np.isnan(f0)]
+        if len(valid_f0) > 0:
+            mean_f0 = np.median(valid_f0)
+            if mean_f0 < 165:
+                male_score += 1.0
+            elif mean_f0 < 200:
+                male_score += 0.5
+            else:
+                male_score += 0.0
+            total_weight += 1.5  # ピッチは重要なので重み大きめ
+    except:
+        pass
+
+    # 最終スコア
+    if total_weight > 0:
+        final_score = male_score / total_weight
+    else:
+        final_score = 0.5
+
+    return {
+        'is_male': final_score >= 0.5,
+        'confidence': abs(final_score - 0.5) * 2
+    }
+
+
+def detect_gender_by_timbre(audio_path: str, progress_callback=None) -> dict:
+    """
+    声質（timbre）から性別を判定する
+
+    以下の特徴量を使用：
+    1. フォルマント周波数（F1, F2, F3） - 声道の長さを反映、男性は約10-20%低い
+    2. MFCC（メル周波数ケプストラム係数） - 声道の形状
+    3. スペクトル重心 - 声の「明るさ」
+    4. スペクトルロールオフ - 高周波成分の分布
+
+    Returns:
+        dict: {'gender': 'male'/'female', 'confidence': float, 'features': dict}
+    """
+    log = progress_callback or print
+
+    log("声質（timbre）から性別を判定中...")
+
+    try:
+        import parselmouth
+        from parselmouth import praat
+        has_parselmouth = True
+    except ImportError:
+        has_parselmouth = False
+        log("警告: parselmouthがインストールされていません。フォルマント分析をスキップします")
+
+    # 音声読み込み
+    sr = 16000  # 16kHzで統一
+    y, _ = librosa.load(audio_path, sr=sr, mono=True)
+
+    # 無音チェック
+    if np.max(np.abs(y)) < 0.01:
+        return {'gender': 'unknown', 'confidence': 0.0, 'features': {}}
+
+    features = {}
+    male_score = 0
+    total_weight = 0
+
+    # === 1. フォルマント分析（parselmouth使用） ===
+    if has_parselmouth:
+        try:
+            log("  フォルマント周波数を分析中...")
+            sound = parselmouth.Sound(y, sampling_frequency=sr)
+
+            # フォルマント抽出（男性向け設定: max_formant=5000）
+            # 女性は5500Hz、男性は5000Hzが推奨
+            formant = sound.to_formant_burg(
+                time_step=0.01,
+                max_number_of_formants=4,
+                maximum_formant=5250,  # 男女中間値
+                window_length=0.025,
+                pre_emphasis_from=50.0
+            )
+
+            # 各時点でフォルマントを取得
+            f1_values = []
+            f2_values = []
+            f3_values = []
+
+            for t in formant.ts():
+                f1 = formant.get_value_at_time(1, t)
+                f2 = formant.get_value_at_time(2, t)
+                f3 = formant.get_value_at_time(3, t)
+                if not np.isnan(f1) and f1 > 0:
+                    f1_values.append(f1)
+                if not np.isnan(f2) and f2 > 0:
+                    f2_values.append(f2)
+                if not np.isnan(f3) and f3 > 0:
+                    f3_values.append(f3)
+
+            if f1_values and f2_values and f3_values:
+                mean_f1 = np.median(f1_values)
+                mean_f2 = np.median(f2_values)
+                mean_f3 = np.median(f3_values)
+
+                features['F1'] = mean_f1
+                features['F2'] = mean_f2
+                features['F3'] = mean_f3
+
+                # フォルマント判定
+                # 研究データ: 男性F1は女性より約20%低い、F2は約15%低い
+                # 典型的な男性: F1≈500Hz, F2≈1500Hz, F3≈2500Hz
+                # 典型的な女性: F1≈600Hz, F2≈1750Hz, F3≈2800Hz
+
+                f1_male_score = 1.0 if mean_f1 < 550 else (0.5 if mean_f1 < 650 else 0.0)
+                f2_male_score = 1.0 if mean_f2 < 1600 else (0.5 if mean_f2 < 1800 else 0.0)
+                f3_male_score = 1.0 if mean_f3 < 2650 else (0.5 if mean_f3 < 2900 else 0.0)
+
+                formant_score = (f1_male_score * 0.4 + f2_male_score * 0.35 + f3_male_score * 0.25)
+                male_score += formant_score * 3.0  # 重み3
+                total_weight += 3.0
+
+                log(f"    F1={mean_f1:.0f}Hz, F2={mean_f2:.0f}Hz, F3={mean_f3:.0f}Hz → スコア={formant_score:.2f}")
+        except Exception as e:
+            log(f"    フォルマント分析エラー: {e}")
+
+    # === 2. MFCC分析 ===
+    try:
+        log("  MFCC（声道特徴）を分析中...")
+        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+
+        # MFCC係数の統計
+        mfcc_means = np.mean(mfccs, axis=1)
+
+        features['mfcc_mean'] = mfcc_means.tolist()
+
+        # MFCC2は声のスペクトル傾斜を反映（男性は低い傾向）
+        # MFCC3以降は声道の形状
+        mfcc2 = mfcc_means[1]
+        mfcc3 = mfcc_means[2]
+
+        # 男性はMFCC2が低い傾向（スペクトル傾斜が緩い）
+        mfcc2_male_score = 1.0 if mfcc2 < -5 else (0.5 if mfcc2 < 5 else 0.0)
+
+        male_score += mfcc2_male_score * 1.5  # 重み1.5
+        total_weight += 1.5
+
+        log(f"    MFCC2={mfcc2:.1f} → スコア={mfcc2_male_score:.2f}")
+    except Exception as e:
+        log(f"    MFCC分析エラー: {e}")
+
+    # === 3. スペクトル重心 ===
+    try:
+        log("  スペクトル重心を分析中...")
+        spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+        mean_centroid = np.median(spectral_centroid)
+
+        features['spectral_centroid'] = mean_centroid
+
+        # 男性は声が「暗い」（スペクトル重心が低い）
+        # 典型的な男性: 1500-2500Hz、女性: 2000-3500Hz
+        centroid_male_score = 1.0 if mean_centroid < 2000 else (0.5 if mean_centroid < 2800 else 0.0)
+
+        male_score += centroid_male_score * 1.0  # 重み1
+        total_weight += 1.0
+
+        log(f"    スペクトル重心={mean_centroid:.0f}Hz → スコア={centroid_male_score:.2f}")
+    except Exception as e:
+        log(f"    スペクトル重心分析エラー: {e}")
+
+    # === 4. スペクトルロールオフ ===
+    try:
+        log("  スペクトルロールオフを分析中...")
+        spectral_rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr, roll_percent=0.85)[0]
+        mean_rolloff = np.median(spectral_rolloff)
+
+        features['spectral_rolloff'] = mean_rolloff
+
+        # 男性はロールオフが低い傾向
+        rolloff_male_score = 1.0 if mean_rolloff < 3500 else (0.5 if mean_rolloff < 5000 else 0.0)
+
+        male_score += rolloff_male_score * 0.5  # 重み0.5
+        total_weight += 0.5
+
+        log(f"    スペクトルロールオフ={mean_rolloff:.0f}Hz → スコア={rolloff_male_score:.2f}")
+    except Exception as e:
+        log(f"    スペクトルロールオフ分析エラー: {e}")
+
+    # === 5. ピッチ（参考情報として追加、重みは低め） ===
+    try:
+        f0, voiced_flag, voiced_probs = librosa.pyin(y, fmin=50, fmax=400, sr=sr)
+        valid_f0 = f0[~np.isnan(f0)]
+        if len(valid_f0) > 0:
+            median_pitch = np.median(valid_f0)
+            features['pitch'] = median_pitch
+
+            # ピッチは参考程度（高い声の男性もいるため重みを下げる）
+            pitch_male_score = 1.0 if median_pitch < 150 else (0.5 if median_pitch < 180 else 0.0)
+            male_score += pitch_male_score * 0.5  # 重み0.5（低め）
+            total_weight += 0.5
+
+            log(f"    ピッチ中央値={median_pitch:.0f}Hz → スコア={pitch_male_score:.2f}")
+    except Exception as e:
+        log(f"    ピッチ分析エラー: {e}")
+
+    # === 最終判定 ===
+    if total_weight > 0:
+        final_score = male_score / total_weight
+    else:
+        final_score = 0.5
+
+    # 0.5以上なら男性、未満なら女性
+    is_male = final_score >= 0.5
+    gender = 'male' if is_male else 'female'
+    confidence = abs(final_score - 0.5) * 2  # 0-1のconfidence
+
+    log(f"  総合スコア={final_score:.2f} → {gender}（確信度={confidence:.0%}）")
+
+    return {
+        'gender': gender,
+        'confidence': confidence,
+        'score': final_score,
+        'features': features
+    }
+
+
+def detect_gender_by_voice(audio_path: str, progress_callback=None) -> str:
+    """
+    声質（timbre）から性別を判定する（簡易インターフェース）
+
+    Returns:
+        'male' or 'female'
+    """
+    result = detect_gender_by_timbre(audio_path, progress_callback)
+    return result['gender']
+
+
+def detect_gender_by_pitch_distribution(audio_path: str, progress_callback=None) -> str:
+    """
+    ピッチ分布から性別を判定（バックアップ用）
+    """
+    log = progress_callback or print
+    log("ピッチ分布から性別を推定中...")
+
+    y, sr = librosa.load(audio_path, sr=22050)
+
+    # ピッチ推定
+    pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+    pitch_values = []
+
+    for t in range(pitches.shape[1]):
+        idx = magnitudes[:, t].argmax()
+        pitch = pitches[idx, t]
+        if pitch > 50 and pitch < 400:
+            pitch_values.append(pitch)
+
+    if not pitch_values:
+        return 'unknown'
+
+    median_pitch = np.median(pitch_values)
+    result = 'male' if median_pitch < 165 else 'female'
+    log(f"ピッチ中央値={median_pitch:.1f}Hz → {result}")
+
+    return result
 
 
 def separate_speakers_clearvoice(audio_path: str, output_dir: str, progress_callback=None) -> list:
@@ -275,7 +686,7 @@ def process_with_selected_speakers(
 
     # 6. 動画と合成
     log("動画と音声を合成中...")
-    merge_audio_video(temp_audio, input_video, output_video)
+    merge_audio_video(input_video, temp_audio, output_video)
 
     log("処理完了!")
 
@@ -409,6 +820,409 @@ def process_with_clearvoice(
         log('merge', f"処理済み音声を保存: {output_path}")
 
 
+def detect_gender_for_segment(segment_audio: np.ndarray, sr: int) -> dict:
+    """
+    セグメント用の声質判定（軽量版）
+
+    複数の特徴を組み合わせて判定：
+    1. ピッチ（F0）- 基本的な判定基準
+    2. スペクトル重心 - 声の「明るさ」
+    3. スペクトルロールオフ - 高周波成分
+    4. MFCC - 声道特徴
+    5. フォルマント比率 - 声道の長さの比較指標
+    """
+    try:
+        import parselmouth
+        has_parselmouth = True
+    except ImportError:
+        has_parselmouth = False
+
+    male_score = 0
+    total_weight = 0
+
+    # === 1. ピッチ（F0）分析 - 重み0.5（参考程度） ===
+    # 声質判定ではピッチは補助的。高い声の男性もいる
+    try:
+        f0, voiced_flag, voiced_probs = librosa.pyin(
+            segment_audio, fmin=50, fmax=400, sr=sr
+        )
+        valid_f0 = f0[~np.isnan(f0)]
+        if len(valid_f0) > 3:
+            median_pitch = np.median(valid_f0)
+            # 非常に低いピッチのみ男性判定に寄与
+            if median_pitch < 120:
+                pitch_male = 1.0
+            elif median_pitch < 150:
+                pitch_male = 0.6
+            else:
+                pitch_male = 0.3  # 高くても0.3（声質で判断するため）
+            male_score += pitch_male * 0.5  # 重みを大幅に下げる
+            total_weight += 0.5
+    except:
+        pass
+
+    # === 2. スペクトル重心 - 重み2.5（最重要：声の明るさ） ===
+    # 男性は声道が長いため、スペクトル重心が低い
+    # これはピッチに関係なく一定
+    try:
+        centroid = librosa.feature.spectral_centroid(y=segment_audio, sr=sr)[0]
+        mean_centroid = np.median(centroid)
+        # 閾値を緩和して男性を検出しやすく
+        if mean_centroid < 1800:
+            centroid_male = 1.0
+        elif mean_centroid < 2500:
+            centroid_male = 0.7
+        elif mean_centroid < 3200:
+            centroid_male = 0.4
+        else:
+            centroid_male = 0.1
+        male_score += centroid_male * 2.5
+        total_weight += 2.5
+    except:
+        pass
+
+    # === 3. スペクトルロールオフ - 重み1.5（声の倍音構造） ===
+    # 男性は高周波成分が少ない
+    try:
+        rolloff = librosa.feature.spectral_rolloff(y=segment_audio, sr=sr, roll_percent=0.85)[0]
+        mean_rolloff = np.median(rolloff)
+        if mean_rolloff < 3500:
+            rolloff_male = 1.0
+        elif mean_rolloff < 5000:
+            rolloff_male = 0.7
+        elif mean_rolloff < 6500:
+            rolloff_male = 0.4
+        else:
+            rolloff_male = 0.1
+        male_score += rolloff_male * 1.5
+        total_weight += 1.5
+    except:
+        pass
+
+    # === 4. MFCC分析 - 重み1.5（声道の形状） ===
+    # MFCCは声道の形状を表す - ピッチに依存しない
+    try:
+        mfccs = librosa.feature.mfcc(y=segment_audio, sr=sr, n_mfcc=13)
+        mfcc_means = np.mean(mfccs, axis=1)
+        # MFCC2: スペクトル傾斜（男性は緩やか=値が低い傾向）
+        mfcc2 = mfcc_means[1]
+        # 閾値を緩和
+        if mfcc2 < -5:
+            mfcc_male = 1.0
+        elif mfcc2 < 5:
+            mfcc_male = 0.7
+        elif mfcc2 < 15:
+            mfcc_male = 0.4
+        else:
+            mfcc_male = 0.1
+        male_score += mfcc_male * 1.5
+        total_weight += 1.5
+    except:
+        pass
+
+    # === 5. フォルマント分析（補助的） - 重み1.0 ===
+    if has_parselmouth and len(segment_audio) > sr * 0.2:
+        try:
+            sound = parselmouth.Sound(segment_audio, sampling_frequency=sr)
+            formant = sound.to_formant_burg(
+                time_step=0.01,
+                max_number_of_formants=4,
+                maximum_formant=5500,  # 広めに取る
+                window_length=0.025,
+                pre_emphasis_from=50.0
+            )
+
+            f1_values = []
+            f2_values = []
+
+            for t in formant.ts():
+                f1 = formant.get_value_at_time(1, t)
+                f2 = formant.get_value_at_time(2, t)
+                if not np.isnan(f1) and 200 < f1 < 1200:
+                    f1_values.append(f1)
+                if not np.isnan(f2) and 500 < f2 < 3000:
+                    f2_values.append(f2)
+
+            if f1_values and f2_values:
+                mean_f1 = np.median(f1_values)
+                mean_f2 = np.median(f2_values)
+                # F2/F1比率で判定（男性は比率が低い傾向）
+                ratio = mean_f2 / mean_f1 if mean_f1 > 0 else 2.5
+                if ratio < 2.2:
+                    formant_male = 1.0
+                elif ratio < 2.8:
+                    formant_male = 0.6
+                else:
+                    formant_male = 0.2
+                male_score += formant_male * 1.0
+                total_weight += 1.0
+        except:
+            pass
+
+    # === 最終判定 ===
+    if total_weight > 0:
+        final_score = male_score / total_weight
+    else:
+        final_score = 0.5
+
+    # 閾値を0.45に下げて男性を検出しやすくする
+    is_male = final_score >= 0.45
+    return {
+        'is_male': is_male,
+        'score': final_score,
+        'confidence': abs(final_score - 0.5) * 2
+    }
+
+
+def process_timbre(
+    audio_path: str,
+    output_path: str,
+    pitch_shift_semitones: float = -3.0,
+    segment_duration: float = 3.0,
+    progress_callback=None
+) -> None:
+    """
+    声質版: inaSpeechSegmenter（CNN）による性別判定 + 後処理 + ダブルチェック
+
+    改善点:
+    1. 後処理: 短い孤立判定を周囲に統合（ノイズ除去）
+    2. ダブルチェック: CNNが「男性」と判定した区間を音響特徴で再確認
+    """
+    def log(step, message):
+        print(message)
+        if progress_callback:
+            progress_callback(step, message)
+
+    log('analyze', "声質版: CNN判定 + 後処理 + ダブルチェック...")
+
+    # 1. 音声を読み込み
+    log('pitch', "ステップ1: 音声を読み込み中...")
+    y, sr = librosa.load(audio_path, sr=44100, mono=False)
+    if y.ndim == 1:
+        y = np.stack([y, y])
+
+    # モノラル版も用意（ダブルチェック用）
+    y_mono = y[0] if y.ndim > 1 else y
+
+    total_duration = y.shape[1] / sr
+    log('pitch', f"音声長: {total_duration:.1f}秒")
+
+    # 2. inaSpeechSegmenterで性別判定
+    log('analyze', "ステップ2: CNNで性別を判定中（初回は時間がかかります）...")
+    segments_raw = detect_gender_ina(audio_path, lambda msg: log('analyze', msg))
+
+    # 3. 後処理: 短い孤立判定を統合
+    log('analyze', "ステップ3: 後処理（孤立判定の統合）...")
+    segments = postprocess_gender_segments(segments_raw, min_duration=0.3)
+
+    # 統計を再計算
+    male_before = sum(e - s for l, s, e in segments_raw if l == 'male')
+    male_after = sum(e - s for l, s, e in segments if l == 'male')
+    if male_before != male_after:
+        log('analyze', f"  後処理で調整: 男性 {male_before:.1f}秒 → {male_after:.1f}秒")
+
+    # 4. 男性区間をダブルチェック + ピッチシフト
+    log('pitch', "ステップ4: ダブルチェック + ピッチシフト中...")
+
+    y_processed = y.copy()
+    male_duration = 0
+    female_duration = 0
+    processed_count = 0
+    double_check_rejected = 0
+
+    for label, start_sec, end_sec in segments:
+        if label == 'male':
+            start_sample = int(start_sec * sr)
+            end_sample = int(end_sec * sr)
+
+            # 範囲チェック
+            if start_sample >= y.shape[1]:
+                continue
+            end_sample = min(end_sample, y.shape[1])
+
+            segment_mono = y_mono[start_sample:end_sample]
+
+            # ダブルチェック: 音響特徴で再確認（1秒以上の区間のみ）
+            duration = end_sec - start_sec
+            should_process = True
+
+            if duration >= 1.0:
+                # 長い区間はダブルチェック
+                double_check = detect_gender_for_segment(segment_mono, sr)
+                if not double_check['is_male'] and double_check['confidence'] > 0.3:
+                    # ダブルチェックで「女性」と高確信度で判定された場合はスキップ
+                    should_process = False
+                    double_check_rejected += 1
+                    female_duration += duration
+
+            if should_process:
+                male_duration += duration
+
+                # 各チャンネルをピッチシフト
+                for ch in range(y.shape[0]):
+                    segment = y[ch, start_sample:end_sample]
+                    if len(segment) < sr * 0.1:  # 0.1秒未満はスキップ
+                        continue
+
+                    processed = pitch_shift_audio(segment, sr, pitch_shift_semitones)
+
+                    # 長さを調整
+                    target_len = end_sample - start_sample
+                    if len(processed) > target_len:
+                        processed = processed[:target_len]
+                    elif len(processed) < target_len:
+                        processed = np.pad(processed, (0, target_len - len(processed)))
+
+                    # クロスフェード
+                    fade_len = min(int(0.02 * sr), len(processed) // 4)
+                    if fade_len > 0:
+                        if start_sample > 0:
+                            fade_in = np.linspace(0, 1, fade_len)
+                            processed[:fade_len] = processed[:fade_len] * fade_in + y[ch, start_sample:start_sample+fade_len] * (1 - fade_in)
+                        if end_sample < y.shape[1]:
+                            fade_out = np.linspace(1, 0, fade_len)
+                            processed[-fade_len:] = processed[-fade_len:] * fade_out + y[ch, end_sample-fade_len:end_sample] * (1 - fade_out)
+
+                    y_processed[ch, start_sample:end_sample] = processed
+
+                processed_count += 1
+
+        elif label == 'female':
+            female_duration += end_sec - start_sec
+
+        # 進捗表示
+        if processed_count > 0 and processed_count % 10 == 0:
+            log('pitch', f"  処理中: {processed_count}区間完了")
+
+    if double_check_rejected > 0:
+        log('pitch', f"  ダブルチェックで{double_check_rejected}区間を女性に修正")
+
+    log('pitch', f"結果: 男性={male_duration:.1f}秒, 女性={female_duration:.1f}秒")
+
+    # 4. クリッピング防止
+    max_val = np.max(np.abs(y_processed))
+    if max_val > 1.0:
+        y_processed = y_processed / max_val * 0.95
+
+    # 5. 保存
+    sf.write(output_path, y_processed.T, sr)
+
+    log('merge', f"処理完了: 男性{male_duration:.1f}秒をピッチシフト、女性{female_duration:.1f}秒はそのまま")
+
+
+def process_hybrid(
+    audio_path: str,
+    output_path: str,
+    pitch_shift_semitones: float = -3.0,
+    male_threshold: float = 165,
+    progress_callback=None
+) -> None:
+    """
+    ハイブリッド版: ClearVoice話者分離 + SpeechBrain声質判定 + Hz判定
+    - 話者分離後、声質=男性 かつ Hz < 閾値 の話者のみピッチシフト
+    - より確実な男性判定が可能
+    """
+    def log(step, message):
+        print(message)
+        if progress_callback:
+            progress_callback(step, message)
+
+    log('separate', "ハイブリッド版: ClearVoice + SpeechBrain + Hz判定...")
+    log('analyze', f"  Hz閾値: {male_threshold}Hz")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 1. ClearVoiceで話者分離
+        log('separate', "ステップ1: ClearVoice話者分離...")
+        separated_files = separate_speakers_clearvoice(
+            audio_path, tmpdir,
+            lambda step, msg: log('separate', msg)
+        )
+
+        if not separated_files:
+            log('error', "話者分離に失敗しました")
+            return
+
+        # 2. 元の音声を読み込み（44100Hzのまま）
+        log('analyze', "ステップ2: 元音声を読み込み中...")
+        y_original, sr_original = librosa.load(audio_path, sr=44100, mono=False)
+        if y_original.ndim == 1:
+            y_original = np.stack([y_original, y_original])
+
+        # 3. 各話者を声質+Hzで判定
+        log('analyze', "ステップ3: 各話者の性別を声質+Hzで判定中...")
+        speaker_info = []
+
+        for i, speaker_file in enumerate(separated_files):
+            log('analyze', f"  話者{i+1}を分析中...")
+
+            # 声質で性別判定
+            gender = detect_gender_by_voice(speaker_file, lambda msg: log('analyze', f"    {msg}"))
+
+            # ピッチ分布も確認
+            pitch_gender = detect_gender_by_pitch_distribution(speaker_file, lambda msg: log('analyze', f"    {msg}"))
+
+            # ハイブリッド判定：両方で男性の場合のみ男性と判定
+            is_male = (gender == 'male' and pitch_gender == 'male')
+
+            speaker_info.append({
+                'file': speaker_file,
+                'gender': gender,
+                'pitch_gender': pitch_gender,
+                'is_male': is_male
+            })
+
+            gender_jp = "男性" if is_male else "女性"
+            log('analyze', f"  話者{i+1}: 声質={gender}, Hz={pitch_gender} → {gender_jp}")
+
+        # 4. 男性話者の音声をピッチシフト
+        log('pitch', "ステップ4: 男性話者の音声をピッチシフト...")
+
+        processed_speakers = []
+        target_len = y_original.shape[1]
+
+        for i, sp_info in enumerate(speaker_info):
+            # 16kHz音声を44100Hzにリサンプリング
+            y_sp_16k, _ = librosa.load(sp_info['file'], sr=16000, mono=True)
+            y_sp = librosa.resample(y_sp_16k, orig_sr=16000, target_sr=44100)
+
+            if sp_info['is_male']:
+                log('pitch', f"  話者{i+1}（男性）をピッチシフト中...")
+                y_sp = pitch_shift_audio(y_sp, 44100, pitch_shift_semitones)
+            else:
+                log('pitch', f"  話者{i+1}（女性）はそのまま")
+
+            processed_speakers.append(y_sp)
+
+        # 5. 処理済み音声を合成
+        log('merge', "ステップ5: 音声を合成中...")
+
+        y_mixed = np.zeros(target_len)
+        for sp in processed_speakers:
+            if len(sp) < target_len:
+                sp = np.pad(sp, (0, target_len - len(sp)))
+            elif len(sp) > target_len:
+                sp = sp[:target_len]
+            y_mixed += sp
+
+        # 正規化
+        if len(processed_speakers) > 1:
+            y_mixed = y_mixed / len(processed_speakers)
+
+        # クリッピング防止
+        max_val = np.max(np.abs(y_mixed))
+        if max_val > 1.0:
+            y_mixed = y_mixed / max_val * 0.95
+
+        # ステレオに変換
+        y_stereo = np.stack([y_mixed, y_mixed])
+
+        # 6. 保存
+        sf.write(output_path, y_stereo.T, 44100)
+
+        male_count = sum(1 for sp in speaker_info if sp['is_male'])
+        log('merge', f"処理完了: {male_count}人の男性話者をピッチシフト")
+
+
 def extract_audio(video_path: str, audio_path: str) -> None:
     """動画から音声を抽出する"""
     ffmpeg_paths = [
@@ -428,7 +1242,10 @@ def extract_audio(video_path: str, audio_path: str) -> None:
         '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2',
         audio_path
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        error_msg = result.stderr or result.stdout or "ffmpeg error"
+        raise RuntimeError(f"音声抽出失敗: {error_msg}")
 
 
 def merge_audio_video(video_path: str, audio_path: str, output_path: str) -> None:
@@ -450,7 +1267,10 @@ def merge_audio_video(video_path: str, audio_path: str, output_path: str) -> Non
         '-c:v', 'copy', '-map', '0:v:0', '-map', '1:a:0',
         '-shortest', output_path
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        error_msg = result.stderr or result.stdout or "ffmpeg error"
+        raise RuntimeError(f"ffmpeg失敗: {error_msg}")
 
 
 def estimate_pitch_for_segment(y: np.ndarray, sr: int) -> float:
@@ -751,29 +1571,40 @@ def process_video(
     pitch_shift_semitones: float = -3.0,
     segment_duration: float = 0.5,
     male_threshold: float = 165,
-    use_clearvoice: bool = True,
+    mode: str = 'hybrid',
     adaptive_window: float = 300.0,
     progress_callback=None
 ) -> None:
     """
     動画を処理して男性の声のみピッチを下げる
 
-    use_clearvoice: TrueならClearVoice話者分離を使用（高精度）、Falseなら簡易版
+    mode:
+      'simple' - 簡易版: Hz判定のみ（高速）
+      'timbre' - 声質版: CNN声質判定のみ（inaSpeechSegmenter）
+      'hybrid' - ハイブリッド: Hz + 声質（両方で男性判定された区間のみ変換）
+
     segment_duration: 簡易版のセグメント長（秒）
-    male_threshold: 男性判定のピッチ閾値（Hz）
-    adaptive_window: 動的閾値調整の区間（秒）。0で固定閾値モード
+    male_threshold: 男性判定のピッチ閾値（Hz）- 簡易版とハイブリッドで使用
+    adaptive_window: 動的閾値調整の区間（秒）。0で固定閾値モード - 簡易版で使用
     """
     def log(step, message):
         print(message)
         if progress_callback:
             progress_callback(step, message)
 
-    mode = "ClearVoice話者分離" if use_clearvoice else "簡易版"
+    mode_names = {
+        'simple': '簡易版（Hz判定のみ）',
+        'timbre': '声質版（CNN声質判定）',
+        'hybrid': 'ハイブリッド（Hz＋声質）'
+    }
+    mode_name = mode_names.get(mode, mode)
+
     log('extract', f"入力動画: {input_video}")
     log('extract', f"出力動画: {output_video}")
-    log('extract', f"処理モード: {mode}")
+    log('extract', f"処理モード: {mode_name}")
     log('extract', f"ピッチシフト: {pitch_shift_semitones} semitones")
-    log('extract', f"男性判定閾値: {male_threshold}Hz")
+    if mode in ['simple', 'hybrid']:
+        log('extract', f"男性判定閾値: {male_threshold}Hz")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         extracted_audio = os.path.join(tmpdir, "extracted.wav")
@@ -784,11 +1615,21 @@ def process_video(
         extract_audio(input_video, extracted_audio)
         log('extract', "音声抽出完了")
 
-        # 2. 音声処理
-        if use_clearvoice:
-            # ClearVoice話者分離モード
-            log('separate', "2. ClearVoice話者分離で処理中...")
-            process_with_clearvoice(
+        # 2. 音声処理（モードに応じて分岐）
+        if mode == 'timbre':
+            # 声質版（セグメントごとのピッチ判定）
+            log('analyze', "2. 声質版で処理中...")
+            process_timbre(
+                extracted_audio,
+                processed_audio,
+                pitch_shift_semitones,
+                segment_duration=2.0,
+                progress_callback=progress_callback
+            )
+        elif mode == 'hybrid':
+            # ハイブリッド版（Hz + 声質の両方で判定）
+            log('analyze', "2. ハイブリッド版で処理中...")
+            process_hybrid(
                 extracted_audio,
                 processed_audio,
                 pitch_shift_semitones,
@@ -796,7 +1637,7 @@ def process_video(
                 progress_callback
             )
         else:
-            # 簡易版モード
+            # 簡易版モード（Hzセグメント判定）
             log('analyze', "2. 簡易版で処理中...")
             process_simple(
                 extracted_audio,

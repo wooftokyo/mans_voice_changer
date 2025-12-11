@@ -6,3 +6,7 @@ flask>=2.0.0
 torch>=2.0.0
 torchaudio>=2.0.0
 demucs>=4.0.0
+praat-parselmouth>=0.4.0
+inaSpeechSegmenter>=0.7.0
+tensorflow>=2.10.0
+tf-keras>=2.15.0
