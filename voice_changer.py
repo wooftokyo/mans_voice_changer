@@ -1573,8 +1573,9 @@ def process_video(
     male_threshold: float = 165,
     mode: str = 'hybrid',
     adaptive_window: float = 300.0,
-    progress_callback=None
-) -> None:
+    progress_callback=None,
+    save_audio_path: str = None
+) -> str:
     """
     動画を処理して男性の声のみピッチを下げる
 
@@ -1586,7 +1587,13 @@ def process_video(
     segment_duration: 簡易版のセグメント長（秒）
     male_threshold: 男性判定のピッチ閾値（Hz）- 簡易版とハイブリッドで使用
     adaptive_window: 動的閾値調整の区間（秒）。0で固定閾値モード - 簡易版で使用
+    save_audio_path: 処理済み音声を保存するパス（指定時のみ保存）
+
+    Returns:
+        処理済み音声ファイルのパス（save_audio_path指定時）、またはNone
     """
+    import shutil
+
     def log(step, message):
         print(message)
         if progress_callback:
@@ -1605,6 +1612,8 @@ def process_video(
     log('extract', f"ピッチシフト: {pitch_shift_semitones} semitones")
     if mode in ['simple', 'hybrid']:
         log('extract', f"男性判定閾値: {male_threshold}Hz")
+
+    saved_audio = None
 
     with tempfile.TemporaryDirectory() as tmpdir:
         extracted_audio = os.path.join(tmpdir, "extracted.wav")
@@ -1649,11 +1658,18 @@ def process_video(
                 progress_callback
             )
 
+        # 処理済み音声を保存（指定時）
+        if save_audio_path:
+            shutil.copy2(processed_audio, save_audio_path)
+            saved_audio = save_audio_path
+            log('combine', f"処理済み音声を保存: {save_audio_path}")
+
         # 3. 処理した音声と元の動画を結合
         log('combine', "3. 動画と音声を結合中...")
         merge_audio_video(input_video, processed_audio, output_video)
 
     log('combine', f"完了！出力ファイル: {output_video}")
+    return saved_audio
 
 
 def extract_audio_only(video_path: str, output_path: str) -> None:

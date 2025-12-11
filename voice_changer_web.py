@@ -1017,7 +1017,10 @@ HTML_TEMPLATE = '''
                     addLog('処理が完了しました!');
                     resultArea.innerHTML = `
                         <div class="success" style="margin-bottom: 15px;">処理が完了しました!</div>
-                        <a href="/download/${taskId}" class="btn btn-primary btn-full" download style="display: block; text-align: center; text-decoration: none;">ダウンロード</a>
+                        <div style="display: flex; gap: 10px;">
+                            <a href="/download/${taskId}?format=video" class="btn btn-primary" download style="flex: 1; text-align: center; text-decoration: none;">動画をダウンロード (MP4)</a>
+                            <a href="/download/${taskId}?format=audio" class="btn btn-success" download style="flex: 1; text-align: center; text-decoration: none;">音声をダウンロード (WAV)</a>
+                        </div>
                     `;
                     processBtn.disabled = false;
                 } else if (data.status === 'error') {
@@ -1287,11 +1290,16 @@ def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold
                 update_progress(task_id, prog, status)
             add_log(task_id, message)
 
-        process_video(input_path, output_path, pitch, segment, threshold, mode, adaptive_window, progress_callback=progress_callback)
+        # 音声ファイル保存パスを生成
+        audio_output_path = output_path.replace('.mp4', '.wav')
+
+        process_video(input_path, output_path, pitch, segment, threshold, mode, adaptive_window,
+                      progress_callback=progress_callback, save_audio_path=audio_output_path)
 
         update_progress(task_id, 100, '完了!')
         add_log(task_id, '処理が完了しました!')
         processing_status[task_id]['status'] = 'complete'
+        processing_status[task_id]['processed_audio'] = audio_output_path
 
         try:
             os.remove(input_path)
@@ -1342,15 +1350,28 @@ def download(task_id):
 
     task = processing_status[task_id]
     output_path = task.get('output')
+    audio_path = task.get('processed_audio')
 
     if not output_path or not os.path.exists(output_path):
         return jsonify({'error': 'ファイルが見つかりません'}), 404
 
     original_name = task.get('original_filename', 'output.mp4')
     name, _ = os.path.splitext(original_name)
-    download_name = f"{name}_processed.mp4"
 
-    return send_file(output_path, as_attachment=True, download_name=download_name)
+    # フォーマット指定（video または audio）
+    format_type = request.args.get('format', 'video')
+
+    if format_type == 'audio':
+        # WAVファイルをダウンロード
+        if audio_path and os.path.exists(audio_path):
+            download_name = f"{name}_processed.wav"
+            return send_file(audio_path, as_attachment=True, download_name=download_name)
+        else:
+            return jsonify({'error': '音声ファイルが見つかりません'}), 404
+    else:
+        # 動画ファイルをダウンロード
+        download_name = f"{name}_processed.mp4"
+        return send_file(output_path, as_attachment=True, download_name=download_name)
 
 
 # ==================== 話者分離API ====================
