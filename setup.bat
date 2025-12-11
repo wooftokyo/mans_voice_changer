@@ -4,6 +4,11 @@ echo ================================================
 echo  男性ボイスチェンジャー セットアップ (Windows)
 echo ================================================
 echo.
+echo 機能:
+echo   - AI声質判定による自動処理（精度95-98%%）
+echo   - 波形エディタで手動編集
+echo   - プロジェクト履歴保存
+echo.
 
 REM Pythonの確認
 echo [1/4] Pythonを確認中...
@@ -103,6 +108,12 @@ if errorlevel 1 (
 echo.
 echo ================================================
 echo  セットアップ完了！
-echo  start.bat をダブルクリックしてアプリを起動してください
 echo ================================================
+echo.
+echo start.bat をダブルクリックしてアプリを起動してください
+echo.
+echo アクセスURL:
+echo   メインページ:   http://localhost:5003
+echo   波形エディタ:   http://localhost:5003/editor
+echo.
 pause

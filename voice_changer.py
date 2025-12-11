@@ -1871,17 +1871,27 @@ def pitch_shift_region(
     input_video: str,
     output_video: str,
     regions: list,
-    pitch_shift_semitones: float = -3.0
-) -> None:
+    pitch_shift_semitones: float = -3.0,
+    save_audio_path: str = None
+) -> str:
     """
     動画の指定区間のみピッチシフトする
 
-    regions: [{'start': float, 'end': float}, ...]  秒単位
+    regions: [{'start': float, 'end': float, 'pitch': float(optional)}, ...]  秒単位
+             pitchが指定されていない場合はpitch_shift_semitonesを使用
+    save_audio_path: 処理済み音声を保存するパス（指定時のみ保存）
+
+    Returns:
+        処理済み音声ファイルのパス（save_audio_path指定時）、またはNone
     """
+    import shutil
+
     print(f"入力動画: {input_video}")
     print(f"出力動画: {output_video}")
     print(f"区間数: {len(regions)}")
-    print(f"ピッチシフト: {pitch_shift_semitones} semitones")
+    print(f"デフォルトピッチシフト: {pitch_shift_semitones} semitones")
+
+    saved_audio = None
 
     with tempfile.TemporaryDirectory() as tmpdir:
         extracted_audio = os.path.join(tmpdir, "extracted.wav")
@@ -1903,6 +1913,9 @@ def pitch_shift_region(
         for i, region in enumerate(regions):
             start_sec = region['start']
             end_sec = region['end']
+            # 区間ごとのピッチ値（指定がなければデフォルト値）
+            region_pitch = region.get('pitch', pitch_shift_semitones)
+
             start_sample = int(start_sec * sr)
             end_sample = int(end_sec * sr)
 
@@ -1911,12 +1924,12 @@ def pitch_shift_region(
                 continue
             end_sample = min(end_sample, y.shape[1])
 
-            print(f"  区間 {i+1}: {start_sec:.2f}s - {end_sec:.2f}s をピッチシフト")
+            print(f"  区間 {i+1}: {start_sec:.2f}s - {end_sec:.2f}s をピッチシフト ({region_pitch:+.1f}半音)")
 
             # 各チャンネルをピッチシフト
             for ch in range(y.shape[0]):
                 segment = y[ch, start_sample:end_sample]
-                shifted = pitch_shift_audio(segment, sr, pitch_shift_semitones)
+                shifted = pitch_shift_audio(segment, sr, region_pitch)
 
                 # 長さを調整
                 target_len = end_sample - start_sample
@@ -1946,11 +1959,18 @@ def pitch_shift_region(
         sf.write(processed_audio, y.T, sr)
         print(f"  処理済み音声: {processed_audio}")
 
+        # 処理済み音声を保存（指定時）
+        if save_audio_path:
+            shutil.copy2(processed_audio, save_audio_path)
+            saved_audio = save_audio_path
+            print(f"  音声ファイルを保存: {save_audio_path}")
+
         # 6. 動画と音声を結合
         print("3. 動画と音声を結合中...")
         merge_audio_video(input_video, processed_audio, output_video)
 
     print(f"完了！出力ファイル: {output_video}")
+    return saved_audio
 
 
 def main():

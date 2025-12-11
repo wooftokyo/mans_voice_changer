@@ -15,7 +15,7 @@ from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
-from voice_changer import process_video, analyze_pitch_distribution
+from voice_changer import process_video, analyze_pitch_distribution, pitch_shift_region
 
 app = Flask(__name__)
 
@@ -41,9 +41,13 @@ HTML_TEMPLATE = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>男性ボイスチェンジャー</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>男性ボイスチェンジャー v3</title>
     <script src="https://unpkg.com/wavesurfer.js@7"></script>
     <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.min.js"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/timeline.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -520,8 +524,20 @@ HTML_TEMPLATE = '''
 </head>
 <body>
     <div class="container">
-        <h1>男性ボイスチェンジャー</h1>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h1 style="margin: 0;">男性ボイスチェンジャー</h1>
+            <div style="display: flex; gap: 10px;">
+                <a href="/editor" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none;">波形エディタ</a>
+                <button id="clearProgressBtn" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">進捗クリア</button>
+            </div>
+        </div>
         <p class="subtitle">男性の声だけピッチを下げます。自動処理後に手動で編集も可能。</p>
+
+        <!-- 作成したプロジェクト -->
+        <div id="projectHistory" style="margin-bottom: 20px; display: none;">
+            <h3 style="margin: 0 0 10px 0; font-size: 1.1em; color: #333;">📂 作成したプロジェクト</h3>
+            <div id="projectList" style="display: flex; flex-wrap: wrap; gap: 10px; max-height: 200px; overflow-y: auto; padding: 10px; background: #f8f9fa; border-radius: 8px;"></div>
+        </div>
 
         <div class="main-content">
             <div class="upload-area" id="uploadArea">
@@ -650,6 +666,52 @@ HTML_TEMPLATE = '''
             </div>
 
             <div id="resultArea"></div>
+
+            <!-- 手動編集セクション -->
+            <div id="editorSection" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 2px solid #e0e0e0;">
+                <h3 style="margin-bottom: 10px; color: #333;">手動編集</h3>
+                <p style="color: #666; margin-bottom: 15px; font-size: 0.9em;">
+                    AIが間違えた部分を波形上でドラッグ選択し、ピッチを再適用できます。ズームスライダーで波形を拡大できます。
+                </p>
+
+                <!-- 動画プレビュー -->
+                <video id="editorVideo" controls style="width: 100%; border-radius: 8px; background: #000;"></video>
+
+                <!-- タイムライン表示エリア -->
+                <div id="timeline" style="margin-top: 15px;"></div>
+
+                <!-- 波形表示エリア -->
+                <div id="waveform" style="background: #1a1a2e; border-radius: 8px; padding: 10px; overflow-x: auto;"></div>
+
+                <!-- ズームコントロール -->
+                <div style="margin-top: 15px; display: flex; gap: 15px; align-items: center; background: #f8f9fa; padding: 10px; border-radius: 8px;">
+                    <label for="zoomSlider" style="font-size: 0.9em; font-weight: bold;">ズーム:</label>
+                    <input type="range" id="zoomSlider" min="10" max="1000" value="10" style="flex: 1;">
+                    <span id="zoomValue" style="font-size: 0.85em; color: #666; min-width: 50px;">10x</span>
+                </div>
+
+                <!-- 選択区間リスト -->
+                <div id="regionsListContainer" style="margin-top: 15px; display: none;">
+                    <h4 style="margin-bottom: 10px; color: #333;">選択区間</h4>
+                    <div id="regionsList" style="max-height: 150px; overflow-y: auto;"></div>
+                </div>
+
+                <!-- 編集コントロール -->
+                <div style="margin-top: 15px; display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-end;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <div class="setting-label">
+                            <span>ピッチシフト（半音）</span>
+                            <span class="setting-value" id="editorPitchValue">-3.0</span>
+                        </div>
+                        <input type="range" id="editorPitchSlider" min="-12" max="12" step="0.5" value="-3">
+                    </div>
+                    <button id="applyManualBtn" class="btn btn-primary" disabled>選択区間にピッチ適用</button>
+                    <button id="clearRegionsBtn" class="btn btn-secondary">区間クリア</button>
+                </div>
+
+                <!-- 手動編集結果 -->
+                <div id="manualResultArea" style="margin-top: 15px;"></div>
+            </div>
         </div>
     </div>
 
@@ -673,9 +735,58 @@ HTML_TEMPLATE = '''
         const uploadProgress = document.getElementById('uploadProgress');
         const uploadProgressFill = document.getElementById('uploadProgressFill');
         const uploadStatusText = document.getElementById('uploadStatusText');
+        const projectHistory = document.getElementById('projectHistory');
+        const projectList = document.getElementById('projectList');
 
         let selectedFile = null;
         let logVisible = true;
+
+        // ==================== プロジェクト履歴 ====================
+        function getProjects() {
+            try {
+                return JSON.parse(localStorage.getItem('voiceChangerProjects') || '[]');
+            } catch { return []; }
+        }
+
+        function saveProject(taskId, filename, timestamp) {
+            const projects = getProjects();
+            // 重複チェック
+            if (projects.find(p => p.taskId === taskId)) return;
+            projects.unshift({ taskId, filename, timestamp, date: new Date().toLocaleString('ja-JP') });
+            // 最大20件保持
+            if (projects.length > 20) projects.pop();
+            localStorage.setItem('voiceChangerProjects', JSON.stringify(projects));
+            renderProjects();
+        }
+
+        function removeProject(taskId) {
+            const projects = getProjects().filter(p => p.taskId !== taskId);
+            localStorage.setItem('voiceChangerProjects', JSON.stringify(projects));
+            renderProjects();
+        }
+
+        function renderProjects() {
+            const projects = getProjects();
+            if (projects.length === 0) {
+                projectHistory.style.display = 'none';
+                return;
+            }
+            projectHistory.style.display = 'block';
+            projectList.innerHTML = projects.map(p => `
+                <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; min-width: 200px; flex: 1; max-width: 300px;">
+                    <div style="font-weight: bold; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${p.filename}">${p.filename}</div>
+                    <div style="font-size: 0.8em; color: #666; margin: 4px 0;">${p.date}</div>
+                    <div style="display: flex; gap: 5px; margin-top: 8px;">
+                        <a href="/editor?task_id=${p.taskId}" style="flex: 1; padding: 4px 8px; background: #4a90d9; color: white; border-radius: 4px; text-decoration: none; text-align: center; font-size: 0.85em;">編集</a>
+                        <a href="/download/${p.taskId}?format=video" style="flex: 1; padding: 4px 8px; background: #28a745; color: white; border-radius: 4px; text-decoration: none; text-align: center; font-size: 0.85em;">DL</a>
+                        <button onclick="removeProject('${p.taskId}')" style="padding: 4px 8px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em;">×</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // ページ読み込み時にプロジェクト履歴を表示
+        renderProjects();
 
         function formatFileSize(bytes) {
             if (bytes === 0) return '0 Bytes';
@@ -887,6 +998,44 @@ HTML_TEMPLATE = '''
             return div.innerHTML;
         }
 
+        // 次の動画を処理するために進捗をクリア（ログは保持）
+        window.resetForNextVideo = function() {
+            // ファイル選択をリセット
+            selectedFile = null;
+            fileInput.value = '';
+            fileInfo.classList.remove('show');
+            uploadArea.classList.remove('has-file');
+
+            // 進捗をリセット
+            progressContainer.style.display = 'none';
+            progressFill.style.width = '0%';
+            statusText.textContent = '';
+
+            // 結果エリアをクリア
+            resultArea.innerHTML = '';
+
+            // 手動編集セクションを非表示
+            editorSection.style.display = 'none';
+
+            // ボタン状態をリセット
+            processBtn.disabled = true;
+            analyzeBtn.disabled = true;
+
+            // 解析結果をクリア
+            analysisResult.classList.remove('show');
+
+            // ログに区切りを追加
+            addLog('--- 次の動画を処理 ---', 'info');
+
+            // ページ上部にスクロール
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
+        // 進捗クリアボタンのイベント
+        document.getElementById('clearProgressBtn').addEventListener('click', function() {
+            window.resetForNextVideo();
+        });
+
         const segmentSlider = document.getElementById('segmentSlider');
         const segmentValue = document.getElementById('segmentValue');
         const thresholdSlider = document.getElementById('thresholdSlider');
@@ -1015,11 +1164,15 @@ HTML_TEMPLATE = '''
                     progressFill.style.width = '100%';
                     statusText.textContent = '完了!';
                     addLog('処理が完了しました!');
+                    currentTaskId = taskId;
+                    // プロジェクト履歴に保存
+                    saveProject(taskId, selectedFile ? selectedFile.name : 'unknown', Date.now());
                     resultArea.innerHTML = `
                         <div class="success" style="margin-bottom: 15px;">処理が完了しました!</div>
-                        <div style="display: flex; gap: 10px;">
-                            <a href="/download/${taskId}?format=video" class="btn btn-primary" download style="flex: 1; text-align: center; text-decoration: none;">動画をダウンロード (MP4)</a>
-                            <a href="/download/${taskId}?format=audio" class="btn btn-success" download style="flex: 1; text-align: center; text-decoration: none;">音声をダウンロード (WAV)</a>
+                        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                            <a href="/download/${taskId}?format=video" class="btn btn-primary" download style="flex: 1; text-align: center; text-decoration: none;">動画 (MP4)</a>
+                            <a href="/download/${taskId}?format=audio" class="btn btn-success" download style="flex: 1; text-align: center; text-decoration: none;">音声 (WAV)</a>
+                            <a href="/editor?task_id=${taskId}" class="btn btn-secondary" style="flex: 1; text-align: center; text-decoration: none; background: #6c757d;">波形エディタ</a>
                         </div>
                     `;
                     processBtn.disabled = false;
@@ -1032,6 +1185,281 @@ HTML_TEMPLATE = '''
             };
             await poll();
         }
+
+        // ==================== 手動編集機能 ====================
+        let wavesurfer = null;
+        let wsRegions = null;
+        let currentTaskId = null;
+
+        const editorSection = document.getElementById('editorSection');
+        const editorVideo = document.getElementById('editorVideo');
+        const editorPitchSlider = document.getElementById('editorPitchSlider');
+        const editorPitchValue = document.getElementById('editorPitchValue');
+        const applyManualBtn = document.getElementById('applyManualBtn');
+        const clearRegionsBtn = document.getElementById('clearRegionsBtn');
+        const regionsList = document.getElementById('regionsList');
+        const regionsListContainer = document.getElementById('regionsListContainer');
+        const manualResultArea = document.getElementById('manualResultArea');
+
+        editorPitchSlider.addEventListener('input', () => {
+            editorPitchValue.textContent = editorPitchSlider.value;
+        });
+
+        // グローバルに公開
+        window.openManualEditor = function(taskId) {
+            currentTaskId = taskId;
+            editorSection.style.display = 'block';
+            editorSection.scrollIntoView({ behavior: 'smooth' });
+
+            // 動画を設定
+            const videoUrl = `/download/${taskId}?format=video`;
+            editorVideo.src = videoUrl;
+
+            // 既存のWaveSurferを破棄
+            if (wavesurfer) {
+                wavesurfer.destroy();
+                wavesurfer = null;
+            }
+
+            // タイムラインコンテナをクリア
+            document.getElementById('timeline').innerHTML = '';
+
+            // WaveSurferを本格的に初期化
+            wavesurfer = WaveSurfer.create({
+                container: '#waveform',
+                waveColor: '#4a90d9',
+                progressColor: '#357abd',
+                cursorColor: '#c82333',
+                cursorWidth: 2,
+                media: editorVideo,
+                height: 150,
+                barWidth: 3,
+                barGap: 1,
+                barRadius: 3,
+                normalize: true,
+                plugins: [
+                    WaveSurfer.Timeline.create({
+                        container: '#timeline',
+                        primaryLabelInterval: 5,
+                        secondaryLabelInterval: 1,
+                        style: {
+                            fontSize: '11px',
+                            color: '#666'
+                        }
+                    })
+                ]
+            });
+
+            // Regionsプラグインを有効化
+            wsRegions = wavesurfer.registerPlugin(WaveSurfer.Regions.create());
+
+            // ドラッグで区間選択を有効化
+            wsRegions.enableDragSelection({
+                color: 'rgba(255, 100, 100, 0.3)',
+            });
+
+            // ズーム機能
+            const zoomSlider = document.getElementById('zoomSlider');
+            const zoomValue = document.getElementById('zoomValue');
+
+            zoomSlider.addEventListener('input', () => {
+                const minPxPerSec = Number(zoomSlider.value);
+                wavesurfer.zoom(minPxPerSec);
+                zoomValue.textContent = minPxPerSec + 'x';
+            });
+
+            // 動画の準備ができたらズームの初期値を設定
+            wavesurfer.on('ready', () => {
+                const containerWidth = document.getElementById('waveform').clientWidth;
+                const duration = wavesurfer.getDuration();
+                const minZoom = Math.max(10, Math.ceil(containerWidth / duration));
+                zoomSlider.min = minZoom;
+                zoomSlider.value = minZoom;
+                zoomValue.textContent = minZoom + 'x';
+            });
+
+            // 区間が作成されたとき
+            wsRegions.on('region-created', (region) => {
+                updateRegionsList();
+                applyManualBtn.disabled = false;
+            });
+
+            // 区間が更新されたとき
+            wsRegions.on('region-updated', () => {
+                updateRegionsList();
+            });
+
+            // 区間がクリックされたとき（再生）
+            wsRegions.on('region-clicked', (region, e) => {
+                e.stopPropagation();
+                region.play();
+            });
+
+            // 区間リストを更新
+            function updateRegionsList() {
+                const regions = wsRegions.getRegions();
+                if (regions.length === 0) {
+                    regionsListContainer.style.display = 'none';
+                    applyManualBtn.disabled = true;
+                    return;
+                }
+
+                regionsListContainer.style.display = 'block';
+                regionsList.innerHTML = regions.map((r, i) => `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #f8f9fa; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #dc3545;">
+                        <span style="font-family: monospace;">区間${i + 1}: ${formatTime(r.start)} - ${formatTime(r.end)}</span>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8em;" onclick="playRegion('${r.id}')">再生</button>
+                            <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8em;" onclick="removeRegion('${r.id}')">削除</button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            // 区間クリア
+            clearRegionsBtn.addEventListener('click', () => {
+                wsRegions.clearRegions();
+                updateRegionsList();
+            });
+
+            addLog('手動編集モード: 波形上をドラッグして区間を選択してください');
+        }
+
+        // 区間を再生
+        window.playRegion = function(regionId) {
+            const regions = wsRegions.getRegions();
+            const region = regions.find(r => r.id === regionId);
+            if (region) region.play();
+        };
+
+        // 区間を削除
+        window.removeRegion = function(regionId) {
+            const regions = wsRegions.getRegions();
+            const region = regions.find(r => r.id === regionId);
+            if (region) {
+                region.remove();
+                // リストを更新
+                setTimeout(() => {
+                    const remainingRegions = wsRegions.getRegions();
+                    if (remainingRegions.length === 0) {
+                        regionsListContainer.style.display = 'none';
+                        applyManualBtn.disabled = true;
+                    } else {
+                        regionsList.innerHTML = remainingRegions.map((r, i) => `
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #f8f9fa; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #dc3545;">
+                                <span style="font-family: monospace;">区間${i + 1}: ${formatTime(r.start)} - ${formatTime(r.end)}</span>
+                                <div style="display: flex; gap: 5px;">
+                                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8em;" onclick="playRegion('${r.id}')">再生</button>
+                                    <button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8em;" onclick="removeRegion('${r.id}')">削除</button>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                }, 100);
+            }
+        };
+
+        // 手動編集を適用
+        applyManualBtn.addEventListener('click', async () => {
+            const regions = wsRegions.getRegions();
+            if (regions.length === 0) {
+                alert('区間を選択してください');
+                return;
+            }
+
+            const regionsData = regions.map(r => ({ start: r.start, end: r.end }));
+            const pitch = parseFloat(editorPitchSlider.value);
+
+            applyManualBtn.disabled = true;
+            applyManualBtn.textContent = '処理中...';
+            manualResultArea.innerHTML = '<div style="color: #666;">処理中...</div>';
+
+            try {
+                const response = await fetch('/apply_manual_pitch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        task_id: currentTaskId,
+                        regions: regionsData,
+                        pitch: pitch
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.error) {
+                    manualResultArea.innerHTML = `<div class="error">${escapeHtml(result.error)}</div>`;
+                    applyManualBtn.disabled = false;
+                    applyManualBtn.textContent = '選択区間にピッチ適用';
+                    return;
+                }
+
+                // 処理完了を待つ
+                await pollManualStatus(result.task_id);
+
+            } catch (error) {
+                manualResultArea.innerHTML = `<div class="error">エラー: ${error.message}</div>`;
+                applyManualBtn.disabled = false;
+                applyManualBtn.textContent = '選択区間にピッチ適用';
+            }
+        });
+
+        async function pollManualStatus(taskId) {
+            const poll = async () => {
+                const response = await fetch(`/status/${taskId}`);
+                const data = await response.json();
+
+                if (data.status === 'processing') {
+                    setTimeout(poll, 500);
+                } else if (data.status === 'complete') {
+                    manualResultArea.innerHTML = `
+                        <div class="success" style="margin-bottom: 10px;">手動編集が完了しました!</div>
+                        <div style="display: flex; gap: 10px;">
+                            <a href="/download/${taskId}?format=video" class="btn btn-primary" download style="flex: 1; text-align: center; text-decoration: none;">編集後動画 (MP4)</a>
+                            <a href="/download/${taskId}?format=audio" class="btn btn-success" download style="flex: 1; text-align: center; text-decoration: none;">編集後音声 (WAV)</a>
+                        </div>
+                    `;
+                    applyManualBtn.disabled = false;
+                    applyManualBtn.textContent = '選択区間にピッチ適用';
+
+                    // 新しい動画で波形を更新
+                    editorVideo.src = `/download/${taskId}?format=video`;
+                    currentTaskId = taskId;
+                    wsRegions.clearRegions();
+                    regionsListContainer.style.display = 'none';
+                } else if (data.status === 'error') {
+                    manualResultArea.innerHTML = `<div class="error">${escapeHtml(data.message || 'エラーが発生しました')}</div>`;
+                    applyManualBtn.disabled = false;
+                    applyManualBtn.textContent = '選択区間にピッチ適用';
+                }
+            };
+            await poll();
+        }
+
+        // ページ読み込み時にセッションから前回のタスクを復元
+        window.addEventListener('DOMContentLoaded', async () => {
+            const lastTaskId = sessionStorage.getItem('lastTaskId');
+            if (lastTaskId) {
+                try {
+                    const response = await fetch(`/status/${lastTaskId}`);
+                    const data = await response.json();
+                    if (data.status === 'complete') {
+                        currentTaskId = lastTaskId;
+                        addLog('前回の処理結果を復元しました');
+                        resultArea.innerHTML = `
+                            <div class="success" style="margin-bottom: 15px;">前回の処理結果</div>
+                            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                <a href="/download/${lastTaskId}?format=video" class="btn btn-primary" download style="flex: 1; text-align: center; text-decoration: none;">動画 (MP4)</a>
+                                <a href="/download/${lastTaskId}?format=audio" class="btn btn-success" download style="flex: 1; text-align: center; text-decoration: none;">音声 (WAV)</a>
+                                <a href="/editor?task_id=${lastTaskId}" class="btn btn-secondary" style="flex: 1; text-align: center; text-decoration: none; background: #6c757d;">波形エディタ</a>
+                            </div>
+                        `;
+                    }
+                } catch (e) {
+                    // タスクが見つからない場合は無視
+                }
+            }
+        });
     </script>
 </body>
 </html>
@@ -1343,6 +1771,92 @@ def status(task_id):
     return jsonify(processing_status[task_id])
 
 
+@app.route('/apply_manual_pitch', methods=['POST'])
+def apply_manual_pitch():
+    """手動編集: 選択区間にピッチシフトを適用"""
+    try:
+        data = request.get_json()
+        source_task_id = data.get('task_id')
+        regions = data.get('regions', [])
+        pitch = float(data.get('pitch', -3.0))
+
+        if not source_task_id or source_task_id not in processing_status:
+            return jsonify({'error': '元のタスクが見つかりません'}), 400
+
+        if not regions:
+            return jsonify({'error': '区間が選択されていません'}), 400
+
+        source_task = processing_status[source_task_id]
+        input_path = source_task.get('output')
+
+        if not input_path or not os.path.exists(input_path):
+            return jsonify({'error': '入力ファイルが見つかりません'}), 400
+
+        # 新しいタスクIDを生成
+        new_task_id = str(uuid.uuid4())
+        original_name = source_task.get('original_filename', 'output.mp4')
+        name, _ = os.path.splitext(original_name)
+        output_filename = f"{name}_manual_{new_task_id[:8]}.mp4"
+        output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+        audio_output_path = output_path.replace('.mp4', '.wav')
+
+        processing_status[new_task_id] = {
+            'status': 'processing',
+            'input': input_path,
+            'output': output_path,
+            'processed_audio': audio_output_path,
+            'original_filename': original_name,
+            'progress': 10,
+            'step': '手動編集を処理中...',
+            'logs': [{'message': f'{len(regions)}区間をピッチ変換します', 'type': 'info'}]
+        }
+
+        # バックグラウンドで処理
+        thread = threading.Thread(
+            target=process_manual_regions_task,
+            args=(new_task_id, input_path, output_path, audio_output_path, regions, pitch)
+        )
+        thread.daemon = True
+        thread.start()
+
+        return jsonify({'task_id': new_task_id})
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[MANUAL PITCH ERROR] {error_details}")
+        return jsonify({'error': str(e)}), 500
+
+
+def process_manual_regions_task(task_id, input_path, output_path, audio_output_path, regions, pitch):
+    """手動選択区間のピッチ変換"""
+    try:
+        # 各regionにpitchが含まれているかログ出力
+        print(f"[DEBUG] regions received: {regions}")
+        for i, r in enumerate(regions):
+            region_pitch = r.get('pitch', pitch)
+            print(f"[DEBUG] region {i}: start={r.get('start')}, end={r.get('end')}, pitch={region_pitch}")
+            add_log(task_id, f"区間{i+1}: {r.get('start'):.2f}s - {r.get('end'):.2f}s, {region_pitch}半音")
+
+        add_log(task_id, f'{len(regions)}区間を処理中...')
+        update_progress(task_id, 30, '音声を処理中...')
+
+        # pitch_shift_regionを呼び出し（音声も保存）
+        pitch_shift_region(input_path, output_path, regions, pitch, save_audio_path=audio_output_path)
+
+        update_progress(task_id, 100, '完了!')
+        add_log(task_id, '手動編集が完了しました!')
+        processing_status[task_id]['status'] = 'complete'
+
+    except Exception as e:
+        error_msg = str(e)
+        tb = traceback.format_exc()
+        add_log(task_id, f'エラー発生: {error_msg}', 'error')
+        processing_status[task_id]['status'] = 'error'
+        processing_status[task_id]['message'] = error_msg
+        processing_status[task_id]['traceback'] = tb
+
+
 @app.route('/download/<task_id>')
 def download(task_id):
     if task_id not in processing_status:
@@ -1533,14 +2047,989 @@ def process_selected_speakers_api():
     return jsonify({'status': 'processing'})
 
 
+EDITOR_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>波形エディタ - 男性ボイスチェンジャー</title>
+    <script src="https://unpkg.com/wavesurfer.js@7"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.min.js"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/timeline.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        /* ヘッダー */
+        .editor-header {
+            background: #16213e;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        .editor-header h1 {
+            font-size: 1.2em;
+            color: #4a90d9;
+        }
+        .header-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 0.9em;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #4a90d9; color: white; }
+        .btn-primary:hover { background: #357abd; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-success:hover { background: #218838; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-secondary:hover { background: #5a6268; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* メインエリア */
+        .editor-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* 上部エリア（動画＋区間リスト） */
+        .top-area {
+            display: flex;
+            height: 280px;
+            border-bottom: 1px solid #333;
+        }
+        /* 動画プレビュー */
+        .video-container {
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex: 1;
+            min-width: 0;
+        }
+        .video-container video {
+            max-height: 100%;
+            max-width: 100%;
+        }
+        /* 区間リスト（右側） */
+        .regions-sidebar {
+            width: 300px;
+            background: #1a1a2e;
+            border-left: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .regions-sidebar h4 {
+            padding: 12px 15px;
+            margin: 0;
+            font-size: 0.9em;
+            color: #aaa;
+            background: #252540;
+            border-bottom: 1px solid #333;
+        }
+        .regions-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .region-item {
+            display: flex;
+            flex-direction: column;
+            padding: 8px 10px;
+            background: #252540;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            border-left: 3px solid #dc3545;
+        }
+        .region-item.pitch-up { border-left-color: #28a745; }
+        .region-info {
+            font-family: monospace;
+            font-size: 0.8em;
+            margin-bottom: 5px;
+        }
+        .region-pitch {
+            font-size: 0.75em;
+            margin-bottom: 5px;
+        }
+        .region-actions {
+            display: flex;
+            gap: 5px;
+        }
+        .region-actions button {
+            flex: 1;
+            padding: 4px 8px;
+            font-size: 0.7em;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .regions-empty {
+            color: #666;
+            text-align: center;
+            padding: 20px;
+            font-size: 0.85em;
+        }
+
+        /* ツールバー */
+        .toolbar {
+            background: #252540;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        .tool-group {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        .tool-btn {
+            width: 40px;
+            height: 40px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #fff;
+            cursor: pointer;
+            font-size: 1.2em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .tool-btn:hover { border-color: #4a90d9; background: #252540; }
+        .tool-btn.active { border-color: #4a90d9; background: #4a90d9; }
+        .tool-btn svg { width: 20px; height: 20px; }
+        .tool-separator {
+            width: 1px;
+            height: 30px;
+            background: #444;
+            margin: 0 10px;
+        }
+        .zoom-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .zoom-control label { font-size: 0.85em; color: #aaa; }
+        .zoom-control input[type="range"] {
+            width: 150px;
+            accent-color: #4a90d9;
+        }
+        .zoom-value {
+            font-size: 0.85em;
+            color: #4a90d9;
+            min-width: 50px;
+        }
+        .time-display {
+            font-family: monospace;
+            font-size: 1em;
+            color: #4a90d9;
+            background: #1a1a2e;
+            padding: 8px 15px;
+            border-radius: 6px;
+            border: 1px solid #333;
+        }
+
+        /* 波形エリア */
+        .waveform-area {
+            flex: 1;
+            background: #0d0d1a;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        #timeline {
+            background: #1a1a2e;
+            padding: 5px 0;
+        }
+        #waveform {
+            flex: 1;
+            overflow-x: scroll;
+            overflow-y: hidden;
+        }
+
+        /* 下部パネル */
+        .bottom-panel {
+            background: #16213e;
+            padding: 15px 20px;
+            border-top: 1px solid #333;
+        }
+        .panel-row {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .panel-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .panel-group label {
+            font-size: 0.9em;
+            color: #aaa;
+        }
+        .panel-group select, .panel-group input[type="number"] {
+            padding: 8px 12px;
+            border: 1px solid #444;
+            border-radius: 6px;
+            background: #1a1a2e;
+            color: #fff;
+            font-size: 0.9em;
+        }
+        .pitch-value {
+            font-weight: bold;
+            color: #4a90d9;
+            min-width: 60px;
+            text-align: center;
+        }
+
+        /* キーボードヘルプ */
+        .keyboard-help {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 0.8em;
+            color: #aaa;
+            display: none;
+        }
+        .keyboard-help.show { display: block; }
+        .keyboard-help kbd {
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #fff;
+        }
+
+        /* ステータスバー */
+        .status-bar {
+            background: #0d0d1a;
+            padding: 5px 20px;
+            font-size: 0.8em;
+            color: #666;
+            border-top: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+        }
+    </style>
+</head>
+<body>
+    <!-- ヘッダー -->
+    <div class="editor-header">
+        <h1>波形エディタ</h1>
+        <div class="header-actions">
+            <button id="backBtn" class="btn btn-secondary">メインに戻る</button>
+            <button id="downloadBtn" class="btn btn-primary">ダウンロード</button>
+        </div>
+    </div>
+
+    <!-- アップロードエリア（タスクIDがない時に表示） -->
+    <div id="uploadSection" class="editor-main" style="display: none;">
+        <div style="flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 40px;">
+            <!-- プロジェクト履歴 -->
+            <div id="editorProjectHistory" style="width: 100%; max-width: 800px; margin-bottom: 30px; display: none;">
+                <h3 style="margin: 0 0 15px 0; color: #ddd; font-size: 1.1em;">📂 作成したプロジェクト</h3>
+                <div id="editorProjectList" style="display: flex; flex-wrap: wrap; gap: 10px; max-height: 250px; overflow-y: auto; padding: 15px; background: #1a1a2e; border-radius: 8px; border: 1px solid #333;"></div>
+            </div>
+
+            <div id="editorUploadArea" style="width: 100%; max-width: 600px; border: 3px dashed #4a90d9; border-radius: 16px; padding: 60px 40px; text-align: center; cursor: pointer; transition: all 0.3s; background: #1a1a2e;">
+                <div style="font-size: 4em; margin-bottom: 20px;">📁</div>
+                <div style="font-size: 1.3em; margin-bottom: 10px;">動画ファイルをドロップまたはクリック</div>
+                <div style="color: #888; font-size: 0.9em;">対応形式: MP4, MOV, AVI, MKV, WebM</div>
+            </div>
+            <input type="file" id="editorFileInput" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v,.flv,.wmv" style="display: none;">
+            <div id="editorUploadProgress" style="display: none; width: 100%; max-width: 600px; margin-top: 20px;">
+                <div style="background: #333; border-radius: 10px; height: 10px; overflow: hidden;">
+                    <div id="editorProgressFill" style="background: #4a90d9; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                </div>
+                <div id="editorUploadStatus" style="text-align: center; margin-top: 10px; color: #aaa;">アップロード中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- メインエリア（タスクIDがある時に表示） -->
+    <div id="editorSection" class="editor-main" style="display: none;">
+        <!-- 上部エリア（動画＋区間リスト） -->
+        <div class="top-area">
+            <!-- 動画プレビュー -->
+            <div class="video-container">
+                <video id="video" controls></video>
+            </div>
+            <!-- 区間リスト（右側） -->
+            <div class="regions-sidebar">
+                <h4>区間リスト (<span id="regionCount">0</span>)</h4>
+                <div class="regions-list" id="regionsList">
+                    <div class="regions-empty">波形をドラッグして区間を選択<br>→「リストに追加」で確定</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ツールバー -->
+        <div class="toolbar">
+            <div class="tool-group">
+                <!-- 再生コントロール -->
+                <button id="playBtn" class="tool-btn" title="再生/一時停止 (Space)">
+                    <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                    <svg id="pauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                </button>
+                <button id="stopBtn" class="tool-btn" title="停止">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+                </button>
+            </div>
+
+            <div class="time-display">
+                <span id="currentTime">00:00.00</span> / <span id="totalTime">00:00.00</span>
+            </div>
+
+            <div class="zoom-control">
+                <label>ズーム:</label>
+                <input type="range" id="zoomSlider" min="10" max="500" value="50">
+                <span id="zoomValue" class="zoom-value">50x</span>
+                <span style="color: #666; font-size: 0.75em; margin-left: 10px;">↑↓:ズーム ←→:移動</span>
+            </div>
+        </div>
+
+        <!-- 波形エリア -->
+        <div class="waveform-area">
+            <div id="timeline"></div>
+            <div id="waveform"></div>
+        </div>
+
+        <!-- 下部パネル -->
+        <div class="bottom-panel">
+            <div class="panel-row">
+                <div class="panel-group">
+                    <label>ピッチ操作:</label>
+                    <select id="pitchMode">
+                        <option value="down">下げる（男性化）</option>
+                        <option value="up">上げる（元に戻す）</option>
+                    </select>
+                </div>
+                <div class="panel-group">
+                    <label>シフト量:</label>
+                    <input type="range" id="pitchSlider" min="-12" max="12" step="0.5" value="-3" style="width: 150px;">
+                    <span id="pitchValue" class="pitch-value">-3.0</span>
+                </div>
+                <div class="panel-group">
+                    <button id="addToListBtn" class="btn btn-primary" disabled>リストに追加</button>
+                    <button id="processAllBtn" class="btn btn-success" disabled style="font-size: 1.1em; padding: 10px 20px;">🔊 まとめて処理</button>
+                    <button id="clearRegionsBtn" class="btn btn-danger">全クリア</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ステータスバー -->
+        <div class="status-bar">
+            <span id="statusText">準備完了</span>
+            <span>Space: 再生/停止 | Delete: 区間削除 | スクロール↑↓: ズーム | Shift+スクロール: 移動</span>
+        </div>
+    </div><!-- /editorSection -->
+
+    <!-- キーボードヘルプ -->
+    <div class="keyboard-help" id="keyboardHelp">
+        <div><kbd>Space</kbd> 再生/一時停止</div>
+        <div><kbd>Delete</kbd> 最後の区間を削除</div>
+        <div><kbd>↑↓</kbd> ズームイン/アウト</div>
+        <div><kbd>←→</kbd> 波形を移動</div>
+        <div><kbd>?</kbd> このヘルプを表示</div>
+    </div>
+
+    <script>
+        let taskId = new URLSearchParams(window.location.search).get('task_id');
+
+        // セクション
+        const uploadSection = document.getElementById('uploadSection');
+        const editorSection = document.getElementById('editorSection');
+
+        // 要素取得
+        const video = document.getElementById('video');
+        const playBtn = document.getElementById('playBtn');
+        const playIcon = document.getElementById('playIcon');
+        const pauseIcon = document.getElementById('pauseIcon');
+        const stopBtn = document.getElementById('stopBtn');
+        const zoomSlider = document.getElementById('zoomSlider');
+        const zoomValue = document.getElementById('zoomValue');
+        const pitchSlider = document.getElementById('pitchSlider');
+        const pitchValue = document.getElementById('pitchValue');
+        const pitchMode = document.getElementById('pitchMode');
+        const currentTimeEl = document.getElementById('currentTime');
+        const totalTimeEl = document.getElementById('totalTime');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const addToListBtn = document.getElementById('addToListBtn');
+        const processAllBtn = document.getElementById('processAllBtn');
+        const clearRegionsBtn = document.getElementById('clearRegionsBtn');
+        const regionsList = document.getElementById('regionsList');
+        const regionCount = document.getElementById('regionCount');
+        const statusText = document.getElementById('statusText');
+        const keyboardHelp = document.getElementById('keyboardHelp');
+        const waveformEl = document.getElementById('waveform');
+
+        let wavesurfer = null;
+        let wsRegions = null;
+        let currentSelection = null; // 現在選択中の区間（未確定）
+        let regionsData = []; // 確定済み区間リスト {id, start, end, pitch}
+        let currentFilename = null; // 現在のファイル名
+
+        // ==================== プロジェクト履歴 ====================
+        const editorProjectHistory = document.getElementById('editorProjectHistory');
+        const editorProjectList = document.getElementById('editorProjectList');
+
+        function getProjects() {
+            try {
+                return JSON.parse(localStorage.getItem('voiceChangerProjects') || '[]');
+            } catch { return []; }
+        }
+
+        function saveProject(projTaskId, filename) {
+            const projects = getProjects();
+            // 重複チェック（同じタスクIDなら更新）
+            const existing = projects.findIndex(p => p.taskId === projTaskId);
+            if (existing >= 0) {
+                projects[existing].date = new Date().toLocaleString('ja-JP');
+                projects[existing].filename = filename || projects[existing].filename;
+            } else {
+                projects.unshift({ taskId: projTaskId, filename: filename || 'unknown', date: new Date().toLocaleString('ja-JP') });
+            }
+            if (projects.length > 20) projects.pop();
+            localStorage.setItem('voiceChangerProjects', JSON.stringify(projects));
+            renderEditorProjects();
+        }
+
+        function removeProjectFromEditor(projTaskId) {
+            const projects = getProjects().filter(p => p.taskId !== projTaskId);
+            localStorage.setItem('voiceChangerProjects', JSON.stringify(projects));
+            renderEditorProjects();
+        }
+
+        function renderEditorProjects() {
+            const projects = getProjects();
+            if (projects.length === 0) {
+                editorProjectHistory.style.display = 'none';
+                return;
+            }
+            editorProjectHistory.style.display = 'block';
+            editorProjectList.innerHTML = projects.map(p => `
+                <div style="background: #252540; border: 1px solid #444; border-radius: 8px; padding: 12px; min-width: 180px; flex: 1; max-width: 250px;">
+                    <div style="font-weight: bold; font-size: 0.9em; color: #ddd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${p.filename}">${p.filename}</div>
+                    <div style="font-size: 0.8em; color: #888; margin: 4px 0;">${p.date}</div>
+                    <div style="display: flex; gap: 5px; margin-top: 8px;">
+                        <a href="/editor?task_id=${p.taskId}" style="flex: 1; padding: 4px 8px; background: #4a90d9; color: white; border-radius: 4px; text-decoration: none; text-align: center; font-size: 0.85em;">開く</a>
+                        <a href="/download/${p.taskId}?format=video" style="flex: 1; padding: 4px 8px; background: #28a745; color: white; border-radius: 4px; text-decoration: none; text-align: center; font-size: 0.85em;">DL</a>
+                        <button onclick="removeProjectFromEditor('${p.taskId}')" style="padding: 4px 8px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em;">×</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // ==================== アップロード機能 ====================
+        const editorUploadArea = document.getElementById('editorUploadArea');
+        const editorFileInput = document.getElementById('editorFileInput');
+        const editorUploadProgress = document.getElementById('editorUploadProgress');
+        const editorProgressFill = document.getElementById('editorProgressFill');
+        const editorUploadStatus = document.getElementById('editorUploadStatus');
+
+        editorUploadArea.addEventListener('click', () => editorFileInput.click());
+        editorUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            editorUploadArea.style.borderColor = '#28a745';
+            editorUploadArea.style.background = '#252540';
+        });
+        editorUploadArea.addEventListener('dragleave', () => {
+            editorUploadArea.style.borderColor = '#4a90d9';
+            editorUploadArea.style.background = '#1a1a2e';
+        });
+        editorUploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            editorUploadArea.style.borderColor = '#4a90d9';
+            editorUploadArea.style.background = '#1a1a2e';
+            if (e.dataTransfer.files.length > 0) {
+                handleEditorUpload(e.dataTransfer.files[0]);
+            }
+        });
+        editorFileInput.addEventListener('change', () => {
+            if (editorFileInput.files.length > 0) {
+                handleEditorUpload(editorFileInput.files[0]);
+            }
+        });
+
+        function handleEditorUpload(file) {
+            editorUploadProgress.style.display = 'block';
+            editorProgressFill.style.width = '0%';
+            editorUploadStatus.textContent = 'アップロード中...';
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('skip_processing', 'true'); // 処理をスキップ
+
+            const xhr = new XMLHttpRequest();
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percent = (e.loaded / e.total) * 100;
+                    editorProgressFill.style.width = percent + '%';
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status === 200) {
+                    const data = JSON.parse(xhr.responseText);
+                    editorUploadStatus.textContent = '完了！';
+                    // タスクIDを設定してエディタを表示
+                    taskId = data.task_id;
+                    currentFilename = file.name;
+                    sessionStorage.setItem('lastTaskId', taskId);
+                    window.history.replaceState({}, '', `/editor?task_id=${taskId}`);
+                    // プロジェクトを保存
+                    saveProject(taskId, file.name);
+                    showEditor();
+                } else {
+                    editorUploadStatus.textContent = 'エラーが発生しました';
+                }
+            });
+
+            xhr.open('POST', '/upload_for_editor');
+            xhr.send(formData);
+        }
+
+        // ==================== 表示切替 ====================
+        function showUpload() {
+            uploadSection.style.display = 'flex';
+            editorSection.style.display = 'none';
+            downloadBtn.style.display = 'none';
+            // プロジェクト履歴を表示
+            renderEditorProjects();
+        }
+
+        function showEditor() {
+            uploadSection.style.display = 'none';
+            editorSection.style.display = 'flex';
+            downloadBtn.style.display = 'inline-block';
+
+            // 動画ソース設定
+            video.src = `/download/${taskId}?format=video`;
+            video.addEventListener('loadedmetadata', () => {
+                initWaveSurfer();
+            }, { once: true });
+        }
+
+        // 初期表示
+        if (taskId) {
+            showEditor();
+        } else {
+            showUpload();
+        }
+
+        // 時間フォーマット
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = (seconds % 60).toFixed(2);
+            return `${mins.toString().padStart(2, '0')}:${secs.padStart(5, '0')}`;
+        }
+
+        // WaveSurfer初期化
+        function initWaveSurfer() {
+            document.getElementById('timeline').innerHTML = '';
+
+            wavesurfer = WaveSurfer.create({
+                container: '#waveform',
+                waveColor: '#4a90d9',
+                progressColor: '#357abd',
+                cursorColor: '#ff6b6b',
+                cursorWidth: 2,
+                media: video,
+                height: 200,
+                barWidth: 2,
+                barGap: 1,
+                barRadius: 2,
+                normalize: true,
+                scrollParent: true,
+                minPxPerSec: 50,
+                plugins: [
+                    WaveSurfer.Timeline.create({
+                        container: '#timeline',
+                        primaryLabelInterval: 5,
+                        secondaryLabelInterval: 1,
+                        style: { fontSize: '11px', color: '#888' }
+                    })
+                ]
+            });
+
+            wsRegions = wavesurfer.registerPlugin(WaveSurfer.Regions.create());
+
+            // ドラッグで区間選択を有効化
+            wsRegions.enableDragSelection({
+                color: 'rgba(255, 100, 100, 0.3)'
+            });
+
+            // 区間イベント
+            wsRegions.on('region-created', (region) => {
+                // 既に確定済みの区間ならスキップ
+                if (regionsData.find(r => r.id === region.id)) return;
+
+                // 前の未確定選択を削除（確定済みでないもののみ）
+                if (currentSelection && currentSelection.id !== region.id) {
+                    const isConfirmed = regionsData.find(r => r.id === currentSelection.id);
+                    if (!isConfirmed) {
+                        try {
+                            const oldRegion = wsRegions.getRegions().find(r => r.id === currentSelection.id);
+                            if (oldRegion) oldRegion.remove();
+                        } catch(e) {}
+                    }
+                }
+
+                // 新しい選択を保持（未確定）
+                currentSelection = {
+                    id: region.id,
+                    start: region.start,
+                    end: region.end,
+                    region: region
+                };
+                region.setOptions({ color: 'rgba(255, 200, 100, 0.4)' }); // 未確定は黄色
+                addToListBtn.disabled = false;
+                statusText.textContent = `区間選択: ${formatTime(region.start)} - ${formatTime(region.end)} → 「リストに追加」で確定`;
+            });
+
+            wsRegions.on('region-updated', (region) => {
+                // 確定済み区間の更新
+                const confirmed = regionsData.find(r => r.id === region.id);
+                if (confirmed) {
+                    confirmed.start = region.start;
+                    confirmed.end = region.end;
+                    updateRegionsList();
+                }
+                // 未確定の選択区間の更新
+                if (currentSelection && currentSelection.id === region.id) {
+                    currentSelection.start = region.start;
+                    currentSelection.end = region.end;
+                    statusText.textContent = `区間選択: ${formatTime(region.start)} - ${formatTime(region.end)} → 「リストに追加」で確定`;
+                }
+            });
+
+            wsRegions.on('region-clicked', (region, e) => {
+                e.stopPropagation();
+                region.play();
+            });
+
+            // 準備完了
+            wavesurfer.on('ready', () => {
+                totalTimeEl.textContent = formatTime(wavesurfer.getDuration());
+                statusText.textContent = '準備完了 - 波形をドラッグして区間を選択';
+            });
+
+            // 時間更新
+            wavesurfer.on('timeupdate', (time) => {
+                currentTimeEl.textContent = formatTime(time);
+            });
+
+            // 再生状態
+            wavesurfer.on('play', () => {
+                playIcon.style.display = 'none';
+                pauseIcon.style.display = 'block';
+            });
+            wavesurfer.on('pause', () => {
+                playIcon.style.display = 'block';
+                pauseIcon.style.display = 'none';
+            });
+        }
+
+        // マウスホイール/タッチパッドで操作
+        // Mac タッチパッド: 上下スワイプ=ズーム、左右スワイプ=スクロール
+        // Windows マウス: 上下ホイール=ズーム、Shift+ホイール=スクロール
+        waveformEl.addEventListener('wheel', (e) => {
+            e.preventDefault();
+
+            // WaveSurferの内部スクロールコンテナを取得
+            const scrollContainer = waveformEl.querySelector('div[style*="overflow"]') || waveformEl.firstChild;
+
+            // 横スクロール量を計算
+            let scrollX = 0;
+
+            // Shift+ホイール: 横スクロール (Windows向け)
+            if (e.shiftKey) {
+                scrollX = e.deltaY;
+            }
+            // 左右スクロール（Macタッチパッド横スワイプ）
+            else if (Math.abs(e.deltaX) > Math.abs(e.deltaY) * 0.5) {
+                scrollX = e.deltaX;
+            }
+
+            if (scrollX !== 0) {
+                // WaveSurferの現在時間を調整してスクロール
+                const duration = wavesurfer.getDuration();
+                const currentTime = wavesurfer.getCurrentTime();
+                const pixelsPerSecond = wavesurfer.options.minPxPerSec || 100;
+                const timeShift = scrollX / pixelsPerSecond;
+                const newTime = Math.max(0, Math.min(duration, currentTime + timeShift));
+                wavesurfer.setTime(newTime);
+                return;
+            }
+
+            // 上下スクロール（ズーム）
+            const delta = e.deltaY > 0 ? -30 : 30;
+            let newZoom = parseInt(zoomSlider.value) + delta;
+            newZoom = Math.max(parseInt(zoomSlider.min), Math.min(parseInt(zoomSlider.max), newZoom));
+            zoomSlider.value = newZoom;
+            wavesurfer.zoom(newZoom);
+            zoomValue.textContent = newZoom + 'x';
+        }, { passive: false });
+
+        // イベントリスナー
+        playBtn.addEventListener('click', () => wavesurfer.playPause());
+        stopBtn.addEventListener('click', () => { wavesurfer.stop(); });
+
+        zoomSlider.addEventListener('input', () => {
+            const zoom = parseInt(zoomSlider.value);
+            wavesurfer.zoom(zoom);
+            zoomValue.textContent = zoom + 'x';
+        });
+
+        pitchSlider.addEventListener('input', () => {
+            pitchValue.textContent = pitchSlider.value;
+        });
+
+        pitchMode.addEventListener('change', () => {
+            if (pitchMode.value === 'up') {
+                pitchSlider.value = 3;
+            } else {
+                pitchSlider.value = -3;
+            }
+            pitchValue.textContent = pitchSlider.value;
+            // 区間選択の色を更新
+            wsRegions.enableDragSelection({
+                color: pitchMode.value === 'up' ? 'rgba(40, 167, 69, 0.3)' : 'rgba(255, 100, 100, 0.3)'
+            });
+        });
+
+        // 区間リスト更新
+        function updateRegionsList() {
+            regionCount.textContent = regionsData.length;
+            if (regionsData.length === 0) {
+                regionsList.innerHTML = '<div class="regions-empty">波形をドラッグして区間を選択<br>→「リストに追加」で確定</div>';
+                processAllBtn.disabled = true;
+                return;
+            }
+            processAllBtn.disabled = false;
+            regionsList.innerHTML = regionsData.map((r, i) => `
+                <div class="region-item ${r.pitch > 0 ? 'pitch-up' : ''}" style="padding: 8px; margin: 4px 0; background: #2a2a40; border-radius: 4px; border-left: 3px solid ${r.pitch > 0 ? '#28a745' : '#dc3545'};">
+                    <div style="font-size: 0.9em;">区間${i + 1}: ${formatTime(r.start)} - ${formatTime(r.end)}</div>
+                    <div style="font-size: 0.85em; color: ${r.pitch > 0 ? '#28a745' : '#dc3545'};">${r.pitch > 0 ? '+' : ''}${r.pitch}半音</div>
+                    <div style="margin-top: 4px;">
+                        <button onclick="playRegion('${r.id}')" style="padding: 2px 8px; background: #4a90d9; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em;">再生</button>
+                        <button onclick="removeRegion('${r.id}')" style="padding: 2px 8px; background: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em;">削除</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 区間再生
+        window.playRegion = function(regionId) {
+            const regions = wsRegions.getRegions();
+            const region = regions.find(r => r.id === regionId);
+            if (region) region.play();
+        };
+
+        // 区間削除
+        window.removeRegion = function(regionId) {
+            const regions = wsRegions.getRegions();
+            const region = regions.find(r => r.id === regionId);
+            if (region) region.remove();
+            regionsData = regionsData.filter(r => r.id !== regionId);
+            updateRegionsList();
+        };
+
+        // リストに追加
+        addToListBtn.addEventListener('click', () => {
+            if (!currentSelection) {
+                statusText.textContent = '区間を選択してください';
+                return;
+            }
+
+            const pitch = pitchMode.value === 'up'
+                ? Math.abs(parseFloat(pitchSlider.value))
+                : -Math.abs(parseFloat(pitchSlider.value));
+
+            // 確定済みリストに追加
+            regionsData.push({
+                id: currentSelection.id,
+                start: currentSelection.start,
+                end: currentSelection.end,
+                pitch: pitch
+            });
+
+            // 色を確定色に変更
+            const color = pitch > 0 ? 'rgba(40, 167, 69, 0.4)' : 'rgba(220, 53, 69, 0.4)';
+            currentSelection.region.setOptions({ color: color });
+
+            // 選択をクリア
+            currentSelection = null;
+            addToListBtn.disabled = true;
+
+            updateRegionsList();
+            statusText.textContent = `区間を追加しました（${pitch > 0 ? '+' : ''}${pitch}半音） - 続けて選択するか「まとめて処理」`;
+        });
+
+        // まとめて処理
+        processAllBtn.addEventListener('click', async () => {
+            if (regionsData.length === 0) {
+                statusText.textContent = 'リストに区間を追加してください';
+                return;
+            }
+
+            processAllBtn.disabled = true;
+            processAllBtn.textContent = '処理中...';
+            statusText.textContent = '処理中...';
+
+            try {
+                const response = await fetch('/apply_manual_pitch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        task_id: taskId,
+                        regions: regionsData.map(r => ({
+                            start: r.start,
+                            end: r.end,
+                            pitch: r.pitch
+                        }))
+                    })
+                });
+
+                const result = await response.json();
+                if (result.error) {
+                    alert('エラー: ' + result.error);
+                    processAllBtn.disabled = false;
+                    processAllBtn.textContent = '🔊 まとめて処理';
+                    return;
+                }
+
+                await pollStatus(result.task_id);
+
+            } catch (error) {
+                alert('エラー: ' + error.message);
+                processAllBtn.disabled = false;
+                processAllBtn.textContent = '🔊 まとめて処理';
+            }
+        });
+
+        clearRegionsBtn.addEventListener('click', () => {
+            wsRegions.clearRegions();
+            currentSelection = null;
+            regionsData = [];
+            addToListBtn.disabled = true;
+            updateRegionsList();
+            statusText.textContent = '全てクリアしました';
+        });
+
+        async function pollStatus(newTaskId) {
+            const poll = async () => {
+                const response = await fetch(`/status/${newTaskId}`);
+                const data = await response.json();
+
+                if (data.status === 'processing') {
+                    statusText.textContent = data.step || '処理中...';
+                    setTimeout(poll, 500);
+                } else if (data.status === 'complete') {
+                    // 新しいタスクIDでプロジェクトを保存
+                    saveProject(newTaskId, currentFilename);
+                    window.location.href = `/editor?task_id=${newTaskId}`;
+                } else if (data.status === 'error') {
+                    alert('エラー: ' + (data.message || '処理に失敗しました'));
+                    processAllBtn.disabled = false;
+                    processAllBtn.textContent = '🔊 まとめて処理';
+                }
+            };
+            await poll();
+        }
+
+        downloadBtn.addEventListener('click', () => {
+            window.open(`/download/${taskId}?format=video`, '_blank');
+        });
+
+        // 戻るボタン - 最新タスクIDを保存してメインに戻る
+        const backBtn = document.getElementById('backBtn');
+        backBtn.addEventListener('click', () => {
+            sessionStorage.setItem('lastTaskId', taskId);
+            window.location.href = '/';
+        });
+
+        // タスクIDをセッションに保存
+        sessionStorage.setItem('lastTaskId', taskId);
+
+        // キーボードショートカット
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+            switch (e.code) {
+                case 'Space':
+                    e.preventDefault();
+                    wavesurfer.playPause();
+                    break;
+                case 'Delete':
+                case 'Backspace':
+                    e.preventDefault();
+                    // 選択中の区間を削除
+                    if (currentSelection) {
+                        try {
+                            currentSelection.region.remove();
+                        } catch(e) {}
+                        currentSelection = null;
+                        addToListBtn.disabled = true;
+                        statusText.textContent = '選択を削除しました';
+                    }
+                    break;
+                case 'Slash':
+                    if (e.shiftKey) {
+                        keyboardHelp.classList.toggle('show');
+                    }
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>
+'''
+
+
+@app.route('/editor')
+def editor():
+    """波形エディタページ"""
+    return render_template_string(EDITOR_TEMPLATE)
+
+
 if __name__ == '__main__':
-    print("\n" + "="*50)
+    print("\\n" + "="*50)
     print("男性ボイスチェンジャー Web GUI")
     print("="*50)
-    print("\nブラウザで以下のURLを開いてください:")
+    print("\\nブラウザで以下のURLを開いてください:")
     print("  http://localhost:5003")
-    print(f"\nアップロードフォルダ: {UPLOAD_FOLDER}")
+    print(f"\\nアップロードフォルダ: {UPLOAD_FOLDER}")
     print(f"出力フォルダ: {OUTPUT_FOLDER}")
-    print("\n終了するには Ctrl+C を押してください")
-    print("="*50 + "\n")
+    print("\\n終了するには Ctrl+C を押してください")
+    print("="*50 + "\\n")
     app.run(host='0.0.0.0', port=5003, debug=False)

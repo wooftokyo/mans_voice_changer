@@ -38,6 +38,12 @@ if not exist "requirements.txt" (
     echo setup.bat を先に実行してください。
 )
 
+echo ================================================
+echo  アクセスURL:
+echo    メインページ:   http://localhost:5003
+echo    波形エディタ:   http://localhost:5003/editor
+echo ================================================
+echo.
 echo ブラウザで http://localhost:5003 を開きます
 echo.
 echo ================================================
