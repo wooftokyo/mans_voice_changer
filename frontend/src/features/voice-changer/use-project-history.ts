@@ -4,9 +4,9 @@ export interface Project {
   id: string
   filename: string
   taskId: string
-  mode: 'ai' | 'simple'
-  pitchShift: number
-  status: 'completed' | 'error'
+  mode: 'ai' | 'simple' | 'editor'
+  pitchShift?: number
+  status: 'completed' | 'error' | 'uploaded'
   createdAt: string
 }
 

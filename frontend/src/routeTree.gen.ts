@@ -18,6 +18,7 @@ import { Route as errors403RouteImport } from './routes/(errors)/403'
 import { Route as errors401RouteImport } from './routes/(errors)/401'
 import { Route as AuthenticatedSettingsRouteRouteImport } from './routes/_authenticated/settings/route'
 import { Route as AuthenticatedVoiceChangerIndexRouteImport } from './routes/_authenticated/voice-changer/index'
+import { Route as AuthenticatedGuideIndexRouteImport } from './routes/_authenticated/guide/index'
 import { Route as AuthenticatedEditorIndexRouteImport } from './routes/_authenticated/editor/index'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 
@@ -67,6 +68,11 @@ const AuthenticatedVoiceChangerIndexRoute =
     path: '/voice-changer/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedGuideIndexRoute = AuthenticatedGuideIndexRouteImport.update({
+  id: '/guide/',
+  path: '/guide/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedEditorIndexRoute =
   AuthenticatedEditorIndexRouteImport.update({
     id: '/editor/',
@@ -90,6 +96,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/editor': typeof AuthenticatedEditorIndexRoute
+  '/guide': typeof AuthenticatedGuideIndexRoute
   '/voice-changer': typeof AuthenticatedVoiceChangerIndexRoute
 }
 export interface FileRoutesByTo {
@@ -102,6 +109,7 @@ export interface FileRoutesByTo {
   '/': typeof AuthenticatedIndexRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/editor': typeof AuthenticatedEditorIndexRoute
+  '/guide': typeof AuthenticatedGuideIndexRoute
   '/voice-changer': typeof AuthenticatedVoiceChangerIndexRoute
 }
 export interface FileRoutesById {
@@ -116,6 +124,7 @@ export interface FileRoutesById {
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/editor/': typeof AuthenticatedEditorIndexRoute
+  '/_authenticated/guide/': typeof AuthenticatedGuideIndexRoute
   '/_authenticated/voice-changer/': typeof AuthenticatedVoiceChangerIndexRoute
 }
 export interface FileRouteTypes {
@@ -130,6 +139,7 @@ export interface FileRouteTypes {
     | '/'
     | '/settings/appearance'
     | '/editor'
+    | '/guide'
     | '/voice-changer'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -142,6 +152,7 @@ export interface FileRouteTypes {
     | '/'
     | '/settings/appearance'
     | '/editor'
+    | '/guide'
     | '/voice-changer'
   id:
     | '__root__'
@@ -155,6 +166,7 @@ export interface FileRouteTypes {
     | '/_authenticated/'
     | '/_authenticated/settings/appearance'
     | '/_authenticated/editor/'
+    | '/_authenticated/guide/'
     | '/_authenticated/voice-changer/'
   fileRoutesById: FileRoutesById
 }
@@ -232,6 +244,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedVoiceChangerIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/guide/': {
+      id: '/_authenticated/guide/'
+      path: '/guide'
+      fullPath: '/guide'
+      preLoaderRoute: typeof AuthenticatedGuideIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/editor/': {
       id: '/_authenticated/editor/'
       path: '/editor'
@@ -267,6 +286,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedEditorIndexRoute: typeof AuthenticatedEditorIndexRoute
+  AuthenticatedGuideIndexRoute: typeof AuthenticatedGuideIndexRoute
   AuthenticatedVoiceChangerIndexRoute: typeof AuthenticatedVoiceChangerIndexRoute
 }
 
@@ -274,6 +294,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedEditorIndexRoute: AuthenticatedEditorIndexRoute,
+  AuthenticatedGuideIndexRoute: AuthenticatedGuideIndexRoute,
   AuthenticatedVoiceChangerIndexRoute: AuthenticatedVoiceChangerIndexRoute,
 }
 

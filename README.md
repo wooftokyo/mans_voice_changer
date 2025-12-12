@@ -1,172 +1,175 @@
-# Male Voice Changer
+# 男性ボイスチェンジャー
 
-A tool for pitch-shifting male voices in videos. Detects male voices using AI and lowers their pitch.
+動画内の男性の声をAIで検出し、ピッチを下げて変換するツールです。
 
-## Features
+## 機能
 
-### Automatic Processing
-- **AI Voice Detection (Recommended)**: CNN (inaSpeechSegmenter) for high-accuracy gender detection (95-98%)
-- **Simple Pitch Detection**: Lightweight, fast processing (70-80% accuracy)
-- **Double Check**: Additional verification for improved accuracy
+### 自動処理
+- **AI声質判定（推奨）**: CNN（inaSpeechSegmenter）による高精度な性別判定（精度95-98%）
+- **簡易ピッチ検出**: 軽量・高速処理（精度70-80%）
+- **ダブルチェック**: 追加検証による精度向上
 
-### Waveform Editor (Manual Editing)
-- **WaveSurfer.js**: Professional-grade waveform display
-- **Timeline**: Time-axis navigation
-- **Zoom**: Precise editing of small regions
-- **Multiple Region Selection**: Process multiple regions at once
-- **Pitch Up/Down**: Different pitch settings per region
-- **Scroll Controls**:
-  - Mac: Swipe up/down = Zoom, Swipe left/right = Scroll
-  - Windows: Scroll wheel = Zoom, Shift+Scroll = Scroll
+### 波形エディタ（手動編集）
+- **WaveSurfer.js**: プロ仕様の波形表示
+- **タイムライン**: 時間軸でのナビゲーション
+- **ズーム**: 細かい区間の精密編集
+- **複数区間選択**: まとめて処理可能
+- **ピッチ上げ/下げ**: 区間ごとに異なる設定
+- **スクロール操作**:
+  - Mac: 上下スワイプ = ズーム、左右スワイプ = スクロール
+  - Windows: スクロールホイール = ズーム、Shift+スクロール = スクロール
 
-### Project Management
-- **History**: Auto-save processed projects (max 20)
-- **Restore**: Return to any previous processing state
-- **Download**: Separate MP4 (video) and WAV (audio) downloads
+### プロジェクト管理
+- **履歴**: 処理したプロジェクトを自動保存（最大20件）
+- **復元**: 過去の処理状態に戻る
+- **ダウンロード**: MP4（動画）とWAV（音声）を別々にダウンロード
 
-## Requirements
+## 必要環境
 
-- Python 3.10+
-- Node.js 18+ (for frontend development)
+- Python 3.10以上
+- Node.js 18以上（フロントエンド開発用）
 - ffmpeg
 
-## Quick Start
+## クイックスタート
 
-### Production Mode
+### 本番モード
 
 ```bash
-# Install Python dependencies
+# Python依存パッケージをインストール
 pip install -r requirements.txt
 
-# Build frontend (first time or after changes)
+# フロントエンドをビルド（初回または変更後）
 cd frontend && npm install && npm run build && cd ..
 
-# Start server
+# サーバーを起動
 python voice_changer_web.py
 
-# Open http://localhost:5003
+# http://localhost:5003 を開く
 ```
 
-### Development Mode
+### 開発モード
 
 ```bash
-# Terminal 1: Start Flask API
+# ターミナル1: Flask APIを起動
 python voice_changer_web.py
 
-# Terminal 2: Start Vite dev server
+# ターミナル2: Vite開発サーバーを起動
 cd frontend && npm run dev
 
-# Open http://localhost:5173 (Vite with hot reload)
+# http://localhost:5173 を開く（ホットリロード対応）
 ```
 
-### Windows (Batch Files)
+### Windows（バッチファイル）
 
-1. `setup.bat` - First time setup (5-10 minutes)
-2. `start.bat` - Start the server
-3. Browser opens http://localhost:5003 automatically
+1. `setup.bat` - 初回セットアップ（5-10分）
+2. `start.bat` - サーバーを起動
+3. ブラウザが自動で http://localhost:5003 を開きます
 
 ### Mac / Linux
 
 ```bash
-# Install dependencies
+# 依存パッケージをインストール
 brew install python3 ffmpeg
 
-# Install Python packages
+# Pythonパッケージをインストール
 pip3 install -r requirements.txt
 
-# Build frontend
+# フロントエンドをビルド
 cd frontend && npm install && npm run build && cd ..
 
-# Start server
+# サーバーを起動
 python3 voice_changer_web.py
 ```
 
-## Architecture
+## アーキテクチャ
 
 ```
 mans_voice_changer/
 ├── frontend/           # React SPA (Vite + shadcn/ui)
 │   ├── src/
-│   │   ├── features/   # Feature modules
-│   │   ├── components/ # UI components
-│   │   └── lib/        # Utilities & API client
+│   │   ├── features/   # 機能モジュール
+│   │   ├── components/ # UIコンポーネント
+│   │   └── lib/        # ユーティリティ & APIクライアント
 │   └── package.json
-├── static/             # Built frontend (generated)
-├── voice_changer_web.py # Flask API server
-├── voice_changer.py    # Audio processing logic
+├── static/             # ビルド済みフロントエンド（自動生成）
+├── voice_changer_web.py # Flask APIサーバー
+├── voice_changer.py    # 音声処理ロジック
 └── requirements.txt
 ```
 
-## API Endpoints
+## APIエンドポイント
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/upload` | POST | Upload and process video |
-| `/upload_for_editor` | POST | Upload for manual editing |
-| `/status/<task_id>` | GET | Get processing status |
-| `/apply_manual_pitch` | POST | Apply pitch to regions |
-| `/download/<task_id>` | GET | Download processed file |
-| `/audio/<task_id>` | GET | Get audio for waveform |
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/upload` | POST | 動画をアップロードして処理 |
+| `/upload_for_editor` | POST | 手動編集用にアップロード |
+| `/status/<task_id>` | GET | 処理状況を取得 |
+| `/apply_manual_pitch` | POST | 選択区間にピッチを適用 |
+| `/download/<task_id>` | GET | 処理済みファイルをダウンロード |
+| `/audio/<task_id>` | GET | 波形表示用の音声を取得 |
 
-## Processing Modes
+## 処理モード
 
-### AI Voice Detection (Recommended)
-- inaSpeechSegmenter (CNN) for speaker gender detection
-- Automatically identifies male/female voices
-- Double check option for improved accuracy
-- Processing time: 1-2x video length
+### AI声質判定（推奨）
+- inaSpeechSegmenter（CNN）による話者の性別判定
+- 男性/女性の声を自動識別
+- ダブルチェックオプションで精度向上
+- 処理時間: 動画の長さの1-2倍
 
-### Simple Mode
-- Segment-based pitch detection
-- Pitch below threshold = male voice
-- Processing time: 0.5-1x video length
+### 簡易モード
+- セグメント単位のピッチ検出
+- 閾値以下のピッチを男性の声と判定
+- 処理時間: 動画の長さの0.5-1倍
 
-## Settings
+## 設定
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Pitch Shift | Semitones (-12 to +12) | -3 |
-| Segment Length | Detection unit (simple mode) | 0.5s |
-| Male Threshold | Frequencies below this = male | 165Hz |
+| 設定 | 説明 | デフォルト |
+|-----|------|-----------|
+| ピッチシフト | 半音単位（-12〜+12） | -3 |
+| セグメント長 | 検出単位（簡易モード） | 0.5秒 |
+| 男性判定閾値 | この周波数以下を男性と判定 | 165Hz |
 
-## Keyboard Shortcuts (Waveform Editor)
+## キーボードショートカット（波形エディタ）
 
-| Key | Function |
-|-----|----------|
-| Space | Play/Pause |
-| Delete/Backspace | Remove selected region |
+| キー | 機能 |
+|-----|------|
+| Space | 再生/停止 |
+| ← | 5秒戻る |
+| → | 5秒進む |
+| M | モード切り替え（選択/移動） |
+| Delete/Backspace | 選択した区間を削除 |
 
-## Troubleshooting
+## トラブルシューティング
 
-### "Python not found"
-- Install Python and add to PATH
-- Windows: Check "Add Python to PATH" during installation
+### 「Pythonが見つかりません」
+- Pythonをインストールし、PATHに追加してください
+- Windows: インストール時に「Add Python to PATH」にチェック
 
-### "ffmpeg not found"
+### 「ffmpegが見つかりません」
 - Windows: `winget install ffmpeg`
 - Mac: `brew install ffmpeg`
 
-### Processing takes too long
-- AI detection takes longer (5-10 min for 5 min video)
-- High CPU usage is normal during processing
+### 処理に時間がかかる
+- AI検出は時間がかかります（5分の動画で5-10分）
+- 処理中のCPU使用率が高いのは正常です
 
-### Port in use
-- Another app is using port 5003
-- Change port in voice_changer_web.py
+### ポートが使用中
+- 別のアプリがポート5003を使用しています
+- voice_changer_web.pyでポート番号を変更してください
 
-## Command Line
+## コマンドライン
 
 ```bash
-# Basic usage
+# 基本的な使い方
 python voice_changer.py input.mp4
 
-# Specify output
+# 出力先を指定
 python voice_changer.py input.mp4 -o output.mp4
 
-# Change pitch shift (default: -3 semitones)
+# ピッチシフトを変更（デフォルト: -3半音）
 python voice_changer.py input.mp4 -p -5
 ```
 
-## License
+## ライセンス
 
 MIT License

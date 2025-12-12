@@ -1,151 +1,151 @@
 @echo off
 chcp 65001 >nul
 echo ================================================
-echo  Male Voice Changer Setup (Windows)
+echo  男性ボイスチェンジャー セットアップ (Windows)
 echo ================================================
 echo.
-echo Features:
-echo   - AI voice detection (95-98%% accuracy)
-echo   - Waveform editor for manual editing
-echo   - Project history
+echo 機能:
+echo   - AI声質判定（精度95-98%%）
+echo   - 波形エディタで手動編集
+echo   - プロジェクト履歴
 echo.
 
-REM Check Python
-echo [1/5] Checking Python...
+REM Pythonの確認
+echo [1/5] Pythonを確認中...
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo Python not found. Attempting to install...
+    echo Pythonが見つかりません。インストールを試みます...
     echo.
 
-    REM Check if winget is available
+    REM wingetが利用可能か確認
     winget --version >nul 2>&1
     if errorlevel 1 (
-        echo [Error] winget not found.
-        echo Please install Python manually:
+        echo [エラー] wingetが見つかりません。
+        echo Pythonを手動でインストールしてください:
         echo https://www.python.org/downloads/
         echo.
-        echo Make sure to check "Add Python to PATH" during installation!
+        echo インストール時に「Add Python to PATH」にチェックを入れてください！
         pause
         exit /b 1
     )
 
-    echo Installing Python via winget...
+    echo wingetでPythonをインストール中...
     winget install Python.Python.3.11 --accept-source-agreements --accept-package-agreements
 
     if errorlevel 1 (
-        echo [Error] Failed to install Python.
-        echo Please install manually: https://www.python.org/downloads/
+        echo [エラー] Pythonのインストールに失敗しました。
+        echo 手動でインストールしてください: https://www.python.org/downloads/
         pause
         exit /b 1
     )
 
     echo.
-    echo Python installed.
+    echo Pythonをインストールしました。
     echo ================================================
-    echo Important: Close this window and re-run setup.bat
-    echo in a new command prompt.
+    echo 重要: このウィンドウを閉じて、新しいコマンドプロンプトで
+    echo setup.batを再実行してください。
     echo ================================================
     pause
     exit /b 0
 )
-echo Python found:
+echo Pythonが見つかりました:
 python --version
 
-REM Check ffmpeg
+REM ffmpegの確認
 echo.
-echo [2/5] Checking ffmpeg...
+echo [2/5] ffmpegを確認中...
 ffmpeg -version >nul 2>&1
 if errorlevel 1 (
-    echo ffmpeg not found. Attempting to install...
+    echo ffmpegが見つかりません。インストールを試みます...
     echo.
 
     winget --version >nul 2>&1
     if errorlevel 1 (
-        echo [Warning] winget not found.
-        echo Please install ffmpeg manually:
+        echo [警告] wingetが見つかりません。
+        echo ffmpegを手動でインストールしてください:
         echo https://ffmpeg.org/download.html
         echo.
     ) else (
-        echo Installing ffmpeg via winget...
+        echo wingetでffmpegをインストール中...
         winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
 
         if errorlevel 1 (
-            echo [Warning] Failed to install ffmpeg.
-            echo Please install manually: https://ffmpeg.org/download.html
+            echo [警告] ffmpegのインストールに失敗しました。
+            echo 手動でインストールしてください: https://ffmpeg.org/download.html
         ) else (
-            echo ffmpeg installed.
+            echo ffmpegをインストールしました。
             echo ================================================
-            echo Important: Close this window and re-run setup.bat
-            echo in a new command prompt.
+            echo 重要: このウィンドウを閉じて、新しいコマンドプロンプトで
+            echo setup.batを再実行してください。
             echo ================================================
             pause
             exit /b 0
         )
     )
 ) else (
-    echo ffmpeg found
+    echo ffmpegが見つかりました
 )
 
-REM Check Node.js
+REM Node.jsの確認
 echo.
-echo [3/5] Checking Node.js...
+echo [3/5] Node.jsを確認中...
 node --version >nul 2>&1
 if errorlevel 1 (
-    echo Node.js not found. Attempting to install...
+    echo Node.jsが見つかりません。インストールを試みます...
     echo.
 
     winget --version >nul 2>&1
     if errorlevel 1 (
-        echo [Warning] winget not found.
-        echo Please install Node.js manually:
+        echo [警告] wingetが見つかりません。
+        echo Node.jsを手動でインストールしてください:
         echo https://nodejs.org/
         echo.
     ) else (
-        echo Installing Node.js via winget...
+        echo wingetでNode.jsをインストール中...
         winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
 
         if errorlevel 1 (
-            echo [Warning] Failed to install Node.js.
-            echo Please install manually: https://nodejs.org/
+            echo [警告] Node.jsのインストールに失敗しました。
+            echo 手動でインストールしてください: https://nodejs.org/
         ) else (
-            echo Node.js installed.
+            echo Node.jsをインストールしました。
             echo ================================================
-            echo Important: Close this window and re-run setup.bat
-            echo in a new command prompt.
+            echo 重要: このウィンドウを閉じて、新しいコマンドプロンプトで
+            echo setup.batを再実行してください。
             echo ================================================
             pause
             exit /b 0
         )
     )
 ) else (
-    echo Node.js found:
+    echo Node.jsが見つかりました:
     node --version
 )
 
-REM Upgrade pip
+REM pipをアップグレード
 echo.
-echo [4/5] Upgrading pip...
+echo [4/5] pipをアップグレード中...
 python -m pip install --upgrade pip
 
-REM Install Python dependencies
+REM Python依存パッケージをインストール
 echo.
-echo [5/5] Installing dependencies...
-echo (This may take 5-10 minutes on first run)
+echo [5/5] 依存パッケージをインストール中...
+echo （初回は5-10分かかる場合があります）
 echo.
 
 pip install -r requirements.txt
 if errorlevel 1 (
     echo.
-    echo [Error] Failed to install packages.
+    echo [エラー] パッケージのインストールに失敗しました。
     pause
     exit /b 1
 )
 
-REM Build frontend if Node.js is available
+REM Node.jsがあればフロントエンドをビルド
 node --version >nul 2>&1
 if not errorlevel 1 (
     echo.
-    echo Building frontend...
+    echo フロントエンドをビルド中...
     cd frontend
     call npm install
     call npm run build
@@ -154,10 +154,10 @@ if not errorlevel 1 (
 
 echo.
 echo ================================================
-echo  Setup Complete!
+echo  セットアップ完了！
 echo ================================================
 echo.
-echo Run start.bat to launch the application
+echo start.batを実行してアプリケーションを起動してください
 echo.
 echo URL: http://localhost:5003
 echo.

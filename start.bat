@@ -1,42 +1,42 @@
 @echo off
 chcp 65001 >nul
 echo ================================================
-echo  Male Voice Changer - Starting...
+echo  男性ボイスチェンジャー - 起動中...
 echo ================================================
 echo.
 
-REM Change to script directory
+REM スクリプトのディレクトリに移動
 cd /d "%~dp0"
 
-REM Check Python
+REM Pythonの確認
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [Error] Python not found.
-    echo Please run setup.bat first.
+    echo [エラー] Pythonが見つかりません。
+    echo 先にsetup.batを実行してください。
     echo.
-    echo Press any key to close...
+    echo 何かキーを押すと閉じます...
     pause >nul
     exit /b 1
 )
 
-echo Python found:
+echo Pythonが見つかりました:
 python --version
 echo.
 
-REM Check for main file
+REM メインファイルの確認
 if not exist "voice_changer_web.py" (
-    echo [Error] voice_changer_web.py not found.
-    echo Make sure this file is in the same folder.
+    echo [エラー] voice_changer_web.pyが見つかりません。
+    echo このファイルが同じフォルダにあることを確認してください。
     echo.
-    echo Press any key to close...
+    echo 何かキーを押すと閉じます...
     pause >nul
     exit /b 1
 )
 
-REM Check for static files
+REM 静的ファイルの確認
 if not exist "static\index.html" (
-    echo [Warning] Frontend not built.
-    echo Building frontend...
+    echo [警告] フロントエンドがビルドされていません。
+    echo フロントエンドをビルド中...
     cd frontend
     call npm install
     call npm run build
@@ -47,25 +47,25 @@ echo ================================================
 echo  URL: http://localhost:5003
 echo ================================================
 echo.
-echo Opening browser...
+echo ブラウザを開いています...
 echo.
 echo ================================================
-echo  Server running... Do not close this window.
-echo  Press Ctrl+C or close window to stop.
+echo  サーバー実行中... このウィンドウを閉じないでください。
+echo  停止するにはCtrl+Cを押すかウィンドウを閉じてください。
 echo ================================================
 echo.
 
-REM Open browser after 2 seconds
+REM 2秒後にブラウザを開く
 start /b cmd /c "timeout /t 2 >nul && start http://localhost:5003"
 
-REM Start server
+REM サーバーを起動
 python voice_changer_web.py
 
-REM Server stopped
+REM サーバー停止
 echo.
 echo ================================================
-echo  Server stopped
+echo  サーバーが停止しました
 echo ================================================
 echo.
-echo Press any key to close...
+echo 何かキーを押すと閉じます...
 pause >nul

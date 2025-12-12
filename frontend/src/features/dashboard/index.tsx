@@ -294,9 +294,11 @@ export function Dashboard() {
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
                             {getStatusBadge(project.status)}
                             {getModeBadge(project.mode)}
-                            <span className="text-xs text-muted-foreground">
-                              ピッチ: {project.pitchShift > 0 ? '+' : ''}{project.pitchShift}半音
-                            </span>
+                            {project.pitchShift !== undefined && (
+                              <span className="text-xs text-muted-foreground">
+                                ピッチ: {project.pitchShift > 0 ? '+' : ''}{project.pitchShift}半音
+                              </span>
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground mt-1">
                             {formatDate(project.createdAt)}

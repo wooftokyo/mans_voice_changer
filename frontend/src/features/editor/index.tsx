@@ -3,7 +3,8 @@ import { useSearch } from '@tanstack/react-router'
 import {
   Upload, Play, Pause, Download, Trash2, Plus, AudioWaveform,
   SkipBack, SkipForward, Volume2, ZoomIn, ZoomOut, RefreshCw,
-  ChevronDown, ChevronUp, Clock, Loader2, MousePointer2, Move
+  ChevronDown, ChevronUp, Clock, Loader2, MousePointer2, Move,
+  History, FileVideo
 } from 'lucide-react'
 import { toast } from 'sonner'
 import WaveSurfer from 'wavesurfer.js'
@@ -19,7 +20,9 @@ import { Progress } from '@/components/ui/progress'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { uploadForEditor, applyManualPitch, getAudioUrl, getVideoUrl, getDownloadUrl, getStatus, pollStatus, type Region, type ProcessedSegment, type StatusResponse } from '@/lib/api'
+import { useProjectHistory } from '@/features/voice-changer/use-project-history'
 
 interface RegionData {
   id: string
@@ -63,6 +66,9 @@ export function WaveformEditor() {
 
   // Processed segments from auto-processing (for display only)
   const [processedSegments, setProcessedSegments] = useState<ProcessedSegment[]>([])
+
+  // Project history
+  const { projects, addProject, deleteProject } = useProjectHistory()
 
   // Store edit mode in a ref for use in event handlers (needed before initialization)
   const editModeRef = useRef(editMode)
@@ -344,11 +350,25 @@ export function WaveformEditor() {
       const response = await uploadForEditor(file)
       setTaskId(response.task_id)
       loadTask(response.task_id)
+
+      // Add to project history
+      addProject({
+        filename: file.name,
+        taskId: response.task_id,
+        mode: 'editor',
+        status: 'uploaded',
+      })
+
       toast.success('ファイルをアップロードしました')
     } catch (error) {
       toast.error('アップロードに失敗しました')
       setIsLoading(false)
     }
+  }
+
+  const handleLoadFromHistory = (projectTaskId: string) => {
+    setTaskId(projectTaskId)
+    loadTask(projectTaskId)
   }
 
   const handleAddRegion = () => {
@@ -1042,6 +1062,65 @@ export function WaveformEditor() {
                 </CardContent>
               </Card>
             )}
+
+            {/* Project History */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <History className="h-4 w-4" />
+                  処理履歴
+                </CardTitle>
+                <CardDescription>最近の処理（最大20件）</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {projects.length === 0 ? (
+                  <div className="text-center py-6 text-muted-foreground">
+                    <FileVideo className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">履歴がありません</p>
+                  </div>
+                ) : (
+                  <ScrollArea className="h-[250px]">
+                    <div className="space-y-2 pr-2">
+                      {projects.map((project) => (
+                        <div
+                          key={project.id}
+                          className={`group flex items-center gap-2 p-2 rounded-lg text-sm border cursor-pointer transition-colors hover:bg-muted/50 ${
+                            taskId === project.taskId ? 'bg-primary/10 border-primary/30' : 'border-muted'
+                          }`}
+                          onClick={() => handleLoadFromHistory(project.taskId)}
+                        >
+                          <FileVideo className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          <div className="flex-1 min-w-0">
+                            <p className="truncate font-medium text-xs">{project.filename}</p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                {project.mode === 'ai' ? 'AI' : project.mode === 'simple' ? '簡易' : 'エディタ'}
+                              </Badge>
+                              {project.pitchShift !== undefined && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  {project.pitchShift > 0 ? '+' : ''}{project.pitchShift}半音
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              deleteProject(project.id)
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
+              </CardContent>
+            </Card>
           </div>
         </div>
       </Main>

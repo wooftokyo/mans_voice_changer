@@ -4,6 +4,7 @@ import {
   Palette,
   Mic,
   LayoutDashboard,
+  HelpCircle,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
 
@@ -38,6 +39,16 @@ export const sidebarData: SidebarData = {
           title: '波形エディタ',
           url: '/editor',
           icon: AudioWaveform,
+        },
+      ],
+    },
+    {
+      title: 'ヘルプ',
+      items: [
+        {
+          title: '使い方',
+          url: '/guide',
+          icon: HelpCircle,
         },
       ],
     },
