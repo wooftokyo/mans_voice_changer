@@ -1,179 +1,172 @@
-# 男性ボイスチェンジャー
+# Male Voice Changer
 
-動画内の男性の声だけをピッチダウンするツールです。
-会話動画で男性の声を低くしたい場合に使用します。
+A tool for pitch-shifting male voices in videos. Detects male voices using AI and lowers their pitch.
 
-## 機能
+## Features
 
-### 自動処理
-- **AI声質判定（推奨）**: CNN（inaSpeechSegmenter）による高精度な男女判別（精度95-98%）
-- **簡易ピッチ検出**: 軽量な処理で高速に変換（精度70-80%）
-- **ダブルチェック機能**: AI判定後に追加検証で精度向上
+### Automatic Processing
+- **AI Voice Detection (Recommended)**: CNN (inaSpeechSegmenter) for high-accuracy gender detection (95-98%)
+- **Simple Pitch Detection**: Lightweight, fast processing (70-80% accuracy)
+- **Double Check**: Additional verification for improved accuracy
 
-### 波形エディタ（手動編集）
-- **WaveSurfer.js**: プロ仕様の波形表示
-- **タイムライン表示**: 時間軸を見ながら編集
-- **ズーム機能**: 細かい部分も正確に編集
-- **複数区間選択**: 複数の区間をまとめて処理
-- **ピッチアップ/ダウン**: 区間ごとに異なるピッチ設定可能
-- **スクロール操作**:
-  - Mac: 上下スワイプ=ズーム、左右スワイプ=移動
-  - Windows: 上下ホイール=ズーム、Shift+ホイール=移動
+### Waveform Editor (Manual Editing)
+- **WaveSurfer.js**: Professional-grade waveform display
+- **Timeline**: Time-axis navigation
+- **Zoom**: Precise editing of small regions
+- **Multiple Region Selection**: Process multiple regions at once
+- **Pitch Up/Down**: Different pitch settings per region
+- **Scroll Controls**:
+  - Mac: Swipe up/down = Zoom, Swipe left/right = Scroll
+  - Windows: Scroll wheel = Zoom, Shift+Scroll = Scroll
 
-### プロジェクト管理
-- **履歴保存**: 処理したプロジェクトを自動保存（最大20件）
-- **いつでも復元**: 過去の処理結果に戻って再編集可能
-- **ダウンロード**: MP4（動画）とWAV（音声）を別々にダウンロード
+### Project Management
+- **History**: Auto-save processed projects (max 20)
+- **Restore**: Return to any previous processing state
+- **Download**: Separate MP4 (video) and WAV (audio) downloads
 
-## 必要環境
+## Requirements
 
-- Python 3.10以上
+- Python 3.10+
+- Node.js 18+ (for frontend development)
 - ffmpeg
 
-## セットアップ
+## Quick Start
 
-### Windows（バッチファイルを使う場合）
+### Production Mode
 
-1. `setup.bat` をダブルクリック（初回のみ、5-10分かかります）
-2. `start.bat` をダブルクリックで起動
-3. ブラウザで http://localhost:5003 が自動で開きます
-
-### Windows（コマンドプロンプトから手動で実行）
-
-```cmd
-# 1. Pythonのインストール確認
-python --version
-
-# Pythonがない場合はインストール:
-# https://www.python.org/downloads/ からダウンロード
-# インストール時に「Add Python to PATH」に必ずチェック！
-
-# 2. ffmpegのインストール（PowerShellで）
-winget install ffmpeg
-
-# 3. プロジェクトのフォルダに移動
-cd C:\path\to\mans_voice_changer
-
-# 4. 依存パッケージをインストール（初回のみ、5-10分かかります）
+```bash
+# Install Python dependencies
 pip install -r requirements.txt
 
-# 5. サーバーを起動
+# Build frontend (first time or after changes)
+cd frontend && npm install && npm run build && cd ..
+
+# Start server
 python voice_changer_web.py
 
-# 6. ブラウザで http://localhost:5003 を開く
+# Open http://localhost:5003
 ```
+
+### Development Mode
+
+```bash
+# Terminal 1: Start Flask API
+python voice_changer_web.py
+
+# Terminal 2: Start Vite dev server
+cd frontend && npm run dev
+
+# Open http://localhost:5173 (Vite with hot reload)
+```
+
+### Windows (Batch Files)
+
+1. `setup.bat` - First time setup (5-10 minutes)
+2. `start.bat` - Start the server
+3. Browser opens http://localhost:5003 automatically
 
 ### Mac / Linux
 
 ```bash
-# Macの場合、Homebrewで依存関係をインストール
+# Install dependencies
 brew install python3 ffmpeg
 
-# プロジェクトのフォルダに移動
-cd /path/to/mans_voice_changer
-
-# 依存パッケージをインストール（初回のみ）
+# Install Python packages
 pip3 install -r requirements.txt
 
-# サーバーを起動
-python3 voice_changer_web.py
+# Build frontend
+cd frontend && npm install && npm run build && cd ..
 
-# ブラウザで http://localhost:5003 を開く
+# Start server
+python3 voice_changer_web.py
 ```
 
-または `./setup.sh` → `./start.sh` でも起動できます。
+## Architecture
 
-## 使い方
+```
+mans_voice_changer/
+├── frontend/           # React SPA (Vite + shadcn/ui)
+│   ├── src/
+│   │   ├── features/   # Feature modules
+│   │   ├── components/ # UI components
+│   │   └── lib/        # Utilities & API client
+│   └── package.json
+├── static/             # Built frontend (generated)
+├── voice_changer_web.py # Flask API server
+├── voice_changer.py    # Audio processing logic
+└── requirements.txt
+```
 
-### 基本的な使い方（自動処理）
+## API Endpoints
 
-1. サーバーを起動（上記参照）
-2. ブラウザで http://localhost:5003 が自動で開く
-3. 動画ファイルをドラッグ＆ドロップまたはクリックで選択
-4. 処理モードを選択:
-   - **AI声質判定（推奨）**: 高精度な男女判別
-   - **簡易版**: 高速だが精度は低め
-5. 「自動処理開始」をクリック
-6. 完了したらダウンロード（MP4またはWAV）
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/upload` | POST | Upload and process video |
+| `/upload_for_editor` | POST | Upload for manual editing |
+| `/status/<task_id>` | GET | Get processing status |
+| `/apply_manual_pitch` | POST | Apply pitch to regions |
+| `/download/<task_id>` | GET | Download processed file |
+| `/audio/<task_id>` | GET | Get audio for waveform |
 
-### 波形エディタで手動編集
+## Processing Modes
 
-1. メインページの「波形エディタ」ボタン、または処理完了後に「波形エディタ」をクリック
-2. 動画をアップロード（または処理済みプロジェクトを選択）
-3. 波形をドラッグして区間を選択（黄色で表示）
-4. ピッチ操作（下げる/上げる）とシフト量を設定
-5. 「リストに追加」で区間を確定（赤=下げ、緑=上げ）
-6. 必要に応じて複数区間を追加
-7. 「まとめて処理」で一括処理
+### AI Voice Detection (Recommended)
+- inaSpeechSegmenter (CNN) for speaker gender detection
+- Automatically identifies male/female voices
+- Double check option for improved accuracy
+- Processing time: 1-2x video length
 
-### キーボードショートカット（波形エディタ）
+### Simple Mode
+- Segment-based pitch detection
+- Pitch below threshold = male voice
+- Processing time: 0.5-1x video length
 
-| キー | 機能 |
-|------|------|
-| Space | 再生/一時停止 |
-| Delete/Backspace | 選択中の区間を削除 |
-| ? | ヘルプ表示 |
+## Settings
 
-## 処理モード
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Pitch Shift | Semitones (-12 to +12) | -3 |
+| Segment Length | Detection unit (simple mode) | 0.5s |
+| Male Threshold | Frequencies below this = male | 165Hz |
 
-### AI声質判定（推奨）
-- inaSpeechSegmenter（CNN）による話者性別判定
-- 男性/女性を自動判別してピッチシフト
-- ダブルチェック機能で精度向上
-- 処理時間: 動画の1-2倍程度
+## Keyboard Shortcuts (Waveform Editor)
 
-### 簡易版
-- セグメントごとのピッチ検出
-- 閾値より低いピッチを男性と判定
-- 処理時間: 動画の0.5-1倍程度
+| Key | Function |
+|-----|----------|
+| Space | Play/Pause |
+| Delete/Backspace | Remove selected region |
 
-## 設定項目
+## Troubleshooting
 
-| 設定 | 説明 | デフォルト |
-|------|------|-----------|
-| ピッチシフト | 半音単位（-12〜+12） | -3 |
-| セグメント長 | 検出単位（簡易版のみ） | 0.5秒 |
-| 男性判定閾値 | この周波数未満を男性と判定 | 165Hz |
+### "Python not found"
+- Install Python and add to PATH
+- Windows: Check "Add Python to PATH" during installation
 
-## トラブルシューティング
-
-### 「Python が見つかりません」
-- Pythonをインストールし、PATHに追加してください
-- Windows: インストーラーで「Add Python to PATH」にチェック
-
-### 「ffmpeg が見つかりません」
-- ffmpegをインストールしてください
+### "ffmpeg not found"
 - Windows: `winget install ffmpeg`
 - Mac: `brew install ffmpeg`
 
-### 処理が終わらない
-- AI声質判定は処理に時間がかかります
-- 5分の動画で5-10分程度かかることがあります
-- CPU使用率が高い状態が続いていれば正常です
+### Processing takes too long
+- AI detection takes longer (5-10 min for 5 min video)
+- High CPU usage is normal during processing
 
-### ポートが使用中
-- 他のアプリが5003ポートを使っている場合があります
-- voice_changer_web.py の最後の行でポート番号を変更できます
+### Port in use
+- Another app is using port 5003
+- Change port in voice_changer_web.py
 
-### プロジェクト履歴が表示されない
-- ブラウザのlocalStorageに保存されています
-- 別のブラウザやシークレットモードでは表示されません
-
-## コマンドライン版
-
-Web UIを使わずにコマンドラインでも実行できます：
+## Command Line
 
 ```bash
-# 基本的な使い方
-python voice_changer.py 入力動画.mp4
+# Basic usage
+python voice_changer.py input.mp4
 
-# 出力ファイル名を指定
-python voice_changer.py 入力動画.mp4 -o 出力動画.mp4
+# Specify output
+python voice_changer.py input.mp4 -o output.mp4
 
-# ピッチシフト量を変更（デフォルト: -3半音）
-python voice_changer.py 入力動画.mp4 -p -5
+# Change pitch shift (default: -3 semitones)
+python voice_changer.py input.mp4 -p -5
 ```
 
-## ライセンス
+## License
 
 MIT License

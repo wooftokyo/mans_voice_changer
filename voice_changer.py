@@ -979,21 +979,31 @@ def process_timbre(
     output_path: str,
     pitch_shift_semitones: float = -3.0,
     segment_duration: float = 3.0,
-    progress_callback=None
-) -> None:
+    progress_callback=None,
+    enable_double_check: bool = True
+) -> list:
     """
     声質版: inaSpeechSegmenter（CNN）による性別判定 + 後処理 + ダブルチェック
 
     改善点:
     1. 後処理: 短い孤立判定を周囲に統合（ノイズ除去）
-    2. ダブルチェック: CNNが「男性」と判定した区間を音響特徴で再確認
+    2. ダブルチェック: CNNが「男性」と判定した区間を音響特徴で再確認（オプション）
+
+    enable_double_check: ダブルチェックを有効にするかどうか
+
+    Returns:
+        list: 処理された区間のリスト [{'start': float, 'end': float, 'pitch': float}, ...]
     """
     def log(step, message):
         print(message)
         if progress_callback:
             progress_callback(step, message)
 
-    log('analyze', "声質版: CNN判定 + 後処理 + ダブルチェック...")
+    # 処理された区間を記録
+    processed_segments = []
+
+    dc_status = "有効" if enable_double_check else "無効"
+    log('analyze', f"声質版: CNN判定 + 後処理（ダブルチェック: {dc_status}）...")
 
     # 1. 音声を読み込み
     log('pitch', "ステップ1: 音声を読み込み中...")
@@ -1042,14 +1052,14 @@ def process_timbre(
 
             segment_mono = y_mono[start_sample:end_sample]
 
-            # ダブルチェック: 音響特徴で再確認（1秒以上の区間のみ）
+            # ダブルチェック: 音響特徴で再確認（1秒以上の区間のみ、オプション）
             duration = end_sec - start_sec
             should_process = True
 
-            if duration >= 1.0:
+            if enable_double_check and duration >= 1.0:
                 # 長い区間はダブルチェック
-                double_check = detect_gender_for_segment(segment_mono, sr)
-                if not double_check['is_male'] and double_check['confidence'] > 0.3:
+                double_check_result = detect_gender_for_segment(segment_mono, sr)
+                if not double_check_result['is_male'] and double_check_result['confidence'] > 0.3:
                     # ダブルチェックで「女性」と高確信度で判定された場合はスキップ
                     should_process = False
                     double_check_rejected += 1
@@ -1057,6 +1067,13 @@ def process_timbre(
 
             if should_process:
                 male_duration += duration
+
+                # 処理区間を記録
+                processed_segments.append({
+                    'start': float(start_sec),
+                    'end': float(end_sec),
+                    'pitch': float(pitch_shift_semitones)
+                })
 
                 # 各チャンネルをピッチシフト
                 for ch in range(y.shape[0]):
@@ -1108,6 +1125,8 @@ def process_timbre(
     sf.write(output_path, y_processed.T, sr)
 
     log('merge', f"処理完了: 男性{male_duration:.1f}秒をピッチシフト、女性{female_duration:.1f}秒はそのまま")
+
+    return processed_segments
 
 
 def process_hybrid(
@@ -1574,8 +1593,9 @@ def process_video(
     mode: str = 'hybrid',
     adaptive_window: float = 300.0,
     progress_callback=None,
-    save_audio_path: str = None
-) -> str:
+    save_audio_path: str = None,
+    enable_double_check: bool = True
+) -> dict:
     """
     動画を処理して男性の声のみピッチを下げる
 
@@ -1588,9 +1608,13 @@ def process_video(
     male_threshold: 男性判定のピッチ閾値（Hz）- 簡易版とハイブリッドで使用
     adaptive_window: 動的閾値調整の区間（秒）。0で固定閾値モード - 簡易版で使用
     save_audio_path: 処理済み音声を保存するパス（指定時のみ保存）
+    enable_double_check: ダブルチェックを有効にするか（timbreモードのみ）
 
     Returns:
-        処理済み音声ファイルのパス（save_audio_path指定時）、またはNone
+        dict: {
+            'audio_path': str or None,  # 処理済み音声ファイルのパス
+            'processed_segments': list  # 処理された区間のリスト [{'start', 'end', 'pitch'}, ...]
+        }
     """
     import shutil
 
@@ -1614,6 +1638,7 @@ def process_video(
         log('extract', f"男性判定閾値: {male_threshold}Hz")
 
     saved_audio = None
+    processed_segments = []
 
     with tempfile.TemporaryDirectory() as tmpdir:
         extracted_audio = os.path.join(tmpdir, "extracted.wav")
@@ -1628,12 +1653,13 @@ def process_video(
         if mode == 'timbre':
             # 声質版（セグメントごとのピッチ判定）
             log('analyze', "2. 声質版で処理中...")
-            process_timbre(
+            processed_segments = process_timbre(
                 extracted_audio,
                 processed_audio,
                 pitch_shift_semitones,
                 segment_duration=2.0,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                enable_double_check=enable_double_check
             )
         elif mode == 'hybrid':
             # ハイブリッド版（Hz + 声質の両方で判定）
@@ -1669,7 +1695,10 @@ def process_video(
         merge_audio_video(input_video, processed_audio, output_video)
 
     log('combine', f"完了！出力ファイル: {output_video}")
-    return saved_audio
+    return {
+        'audio_path': saved_audio,
+        'processed_segments': processed_segments
+    }
 
 
 def extract_audio_only(video_path: str, output_path: str) -> None:

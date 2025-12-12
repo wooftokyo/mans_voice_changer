@@ -1,68 +1,71 @@
 @echo off
 chcp 65001 >nul
 echo ================================================
-echo  男性ボイスチェンジャー 起動中...
+echo  Male Voice Changer - Starting...
 echo ================================================
 echo.
 
-REM スクリプトのディレクトリに移動
+REM Change to script directory
 cd /d "%~dp0"
 
-REM Pythonの確認
+REM Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [エラー] Pythonが見つかりません。
-    echo 先に setup.bat を実行してください。
+    echo [Error] Python not found.
+    echo Please run setup.bat first.
     echo.
-    echo 何かキーを押すと閉じます...
+    echo Press any key to close...
     pause >nul
     exit /b 1
 )
 
-echo Pythonを確認しました:
+echo Python found:
 python --version
 echo.
 
-REM 必要なファイルの確認
+REM Check for main file
 if not exist "voice_changer_web.py" (
-    echo [エラー] voice_changer_web.py が見つかりません。
-    echo このファイルと同じフォルダにあるか確認してください。
+    echo [Error] voice_changer_web.py not found.
+    echo Make sure this file is in the same folder.
     echo.
-    echo 何かキーを押すと閉じます...
+    echo Press any key to close...
     pause >nul
     exit /b 1
 )
 
-if not exist "requirements.txt" (
-    echo [警告] requirements.txt が見つかりません。
-    echo setup.bat を先に実行してください。
+REM Check for static files
+if not exist "static\index.html" (
+    echo [Warning] Frontend not built.
+    echo Building frontend...
+    cd frontend
+    call npm install
+    call npm run build
+    cd ..
 )
 
 echo ================================================
-echo  アクセスURL:
-echo    メインページ:   http://localhost:5003
-echo    波形エディタ:   http://localhost:5003/editor
+echo  URL: http://localhost:5003
 echo ================================================
 echo.
-echo ブラウザで http://localhost:5003 を開きます
+echo Opening browser...
 echo.
 echo ================================================
-echo  サーバー起動中... このウィンドウは閉じないでください
-echo  終了するには Ctrl+C を押すか、ウィンドウを閉じてください
+echo  Server running... Do not close this window.
+echo  Press Ctrl+C or close window to stop.
 echo ================================================
 echo.
 
-REM 2秒後にブラウザを開く
+REM Open browser after 2 seconds
 start /b cmd /c "timeout /t 2 >nul && start http://localhost:5003"
 
-REM サーバー起動（エラーが出ても表示する）
+REM Start server
 python voice_changer_web.py
 
-REM サーバーが終了した場合
+REM Server stopped
 echo.
 echo ================================================
-echo  サーバーが停止しました
+echo  Server stopped
 echo ================================================
 echo.
-echo 何かキーを押すと閉じます...
+echo Press any key to close...
 pause >nul

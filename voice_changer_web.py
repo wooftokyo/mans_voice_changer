@@ -13,11 +13,13 @@ from pathlib import Path
 from datetime import datetime
 
 from flask import Flask, render_template_string, request, jsonify, send_file, send_from_directory
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 from voice_changer import process_video, analyze_pitch_distribution, pitch_shift_region
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', static_url_path='')
+CORS(app)
 
 # アップロード設定
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
@@ -1468,7 +1470,79 @@ HTML_TEMPLATE = '''
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    """Serve React SPA"""
+    return send_from_directory(app.static_folder, 'index.html')
+
+
+@app.route('/audio/<task_id>')
+def get_audio(task_id):
+    """Serve audio file for WaveSurfer.js"""
+    audio_path = None
+
+    # First check in-memory task status
+    if task_id in processing_status:
+        task = processing_status[task_id]
+        audio_path = task.get('processed_audio') or task.get('input')
+
+    # If not found, search output folder for matching files
+    if not audio_path or not os.path.exists(audio_path):
+        import glob
+        patterns = [
+            os.path.join(OUTPUT_FOLDER, f"*{task_id[:8]}*.wav"),
+            os.path.join(OUTPUT_FOLDER, f"*{task_id}*.wav"),
+        ]
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            if matches:
+                audio_path = matches[0]
+                break
+
+    if not audio_path or not os.path.exists(audio_path):
+        return jsonify({'error': 'Audio file not found'}), 404
+
+    return send_file(audio_path, mimetype='audio/wav')
+
+
+@app.route('/video/<task_id>')
+def get_video(task_id):
+    """Serve video file for editor preview"""
+    video_path = None
+
+    # First check in-memory task status
+    if task_id in processing_status:
+        task = processing_status[task_id]
+        video_path = task.get('output') or task.get('input')
+
+    # If not found, search output folder for matching files
+    if not video_path or not os.path.exists(video_path):
+        import glob
+        patterns = [
+            os.path.join(OUTPUT_FOLDER, f"*{task_id[:8]}*.mp4"),
+            os.path.join(OUTPUT_FOLDER, f"*{task_id}*.mp4"),
+        ]
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            if matches:
+                video_path = matches[0]
+                break
+
+    # Also check uploads folder for original file
+    if not video_path or not os.path.exists(video_path):
+        import glob
+        patterns = [
+            os.path.join(UPLOAD_FOLDER, f"*{task_id[:8]}*"),
+            os.path.join(UPLOAD_FOLDER, f"*{task_id}*"),
+        ]
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            if matches:
+                video_path = matches[0]
+                break
+
+    if not video_path or not os.path.exists(video_path):
+        return jsonify({'error': 'Video file not found'}), 404
+
+    return send_file(video_path, mimetype='video/mp4')
 
 
 @app.route('/upload', methods=['POST'])
@@ -1488,7 +1562,8 @@ def upload():
         segment = float(request.form.get('segment', 0.5))
         threshold = float(request.form.get('threshold', 165))
         adaptive_window = float(request.form.get('adaptive_window', 300))
-        mode = request.form.get('mode', 'hybrid')  # hybrid, simple, clearvoice
+        mode = request.form.get('mode', 'hybrid')  # hybrid, simple, timbre
+        double_check = request.form.get('double_check', '1') == '1'  # デフォルト有効
         task_id = str(uuid.uuid4())
 
         filename = secure_filename(file.filename)
@@ -1510,7 +1585,7 @@ def upload():
             'logs': [{'message': 'ファイルを受信しました', 'type': 'info'}]
         }
 
-        thread = threading.Thread(target=process_task, args=(task_id, input_path, output_path, pitch, segment, threshold, mode, adaptive_window))
+        thread = threading.Thread(target=process_task, args=(task_id, input_path, output_path, pitch, segment, threshold, mode, adaptive_window, double_check))
         thread.daemon = True
         thread.start()
 
@@ -1685,7 +1760,7 @@ def update_progress(task_id, progress, step):
         processing_status[task_id]['step'] = step
 
 
-def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold=165, mode='hybrid', adaptive_window=300.0):
+def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold=165, mode='hybrid', adaptive_window=300.0, double_check=True):
     try:
         mode_names = {
             'simple': '簡易版（Hz判定のみ）',
@@ -1695,7 +1770,10 @@ def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold
         mode_name = mode_names.get(mode, mode)
         add_log(task_id, f'処理モード: {mode_name}')
         add_log(task_id, f'ピッチシフト: {pitch}半音')
-        if mode == 'simple':
+        if mode == 'timbre':
+            dc_status = '有効' if double_check else '無効'
+            add_log(task_id, f'ダブルチェック: {dc_status}')
+        elif mode == 'simple':
             add_log(task_id, f'男性判定閾値: {threshold}Hz')
             add_log(task_id, f'セグメント長: {segment}秒')
             adaptive_str = '固定' if adaptive_window == 0 else f'{adaptive_window}秒ごと'
@@ -1721,13 +1799,18 @@ def process_task(task_id, input_path, output_path, pitch, segment=0.5, threshold
         # 音声ファイル保存パスを生成
         audio_output_path = output_path.replace('.mp4', '.wav')
 
-        process_video(input_path, output_path, pitch, segment, threshold, mode, adaptive_window,
-                      progress_callback=progress_callback, save_audio_path=audio_output_path)
+        result = process_video(input_path, output_path, pitch, segment, threshold, mode, adaptive_window,
+                      progress_callback=progress_callback, save_audio_path=audio_output_path,
+                      enable_double_check=double_check)
 
         update_progress(task_id, 100, '完了!')
         add_log(task_id, '処理が完了しました!')
         processing_status[task_id]['status'] = 'complete'
         processing_status[task_id]['processed_audio'] = audio_output_path
+        # 処理済み区間を保存（波形エディタで表示用）
+        if result and 'processed_segments' in result:
+            processing_status[task_id]['processed_segments'] = result['processed_segments']
+            add_log(task_id, f'処理済み区間: {len(result["processed_segments"])}箇所')
 
         try:
             os.remove(input_path)
@@ -1873,7 +1956,7 @@ def download(task_id):
     name, _ = os.path.splitext(original_name)
 
     # フォーマット指定（video または audio）
-    format_type = request.args.get('format', 'video')
+    format_type = request.args.get('type', request.args.get('format', 'video'))
 
     if format_type == 'audio':
         # WAVファイルをダウンロード
@@ -3017,19 +3100,22 @@ EDITOR_TEMPLATE = '''
 
 
 @app.route('/editor')
-def editor():
-    """波形エディタページ"""
-    return render_template_string(EDITOR_TEMPLATE)
+@app.route('/voice-changer')
+@app.route('/settings')
+@app.route('/settings/<path:subpath>')
+def spa_routes(subpath=None):
+    """Serve React SPA for client-side routing"""
+    return send_from_directory(app.static_folder, 'index.html')
 
 
 if __name__ == '__main__':
-    print("\\n" + "="*50)
-    print("男性ボイスチェンジャー Web GUI")
+    print("\n" + "="*50)
+    print("Male Voice Changer - API Server")
     print("="*50)
-    print("\\nブラウザで以下のURLを開いてください:")
+    print("\nOpen in browser:")
     print("  http://localhost:5003")
-    print(f"\\nアップロードフォルダ: {UPLOAD_FOLDER}")
-    print(f"出力フォルダ: {OUTPUT_FOLDER}")
-    print("\\n終了するには Ctrl+C を押してください")
-    print("="*50 + "\\n")
+    print(f"\nUpload folder: {UPLOAD_FOLDER}")
+    print(f"Output folder: {OUTPUT_FOLDER}")
+    print("\nPress Ctrl+C to stop")
+    print("="*50 + "\n")
     app.run(host='0.0.0.0', port=5003, debug=False)

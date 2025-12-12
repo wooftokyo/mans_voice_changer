@@ -1,119 +1,164 @@
 @echo off
 chcp 65001 >nul
 echo ================================================
-echo  男性ボイスチェンジャー セットアップ (Windows)
+echo  Male Voice Changer Setup (Windows)
 echo ================================================
 echo.
-echo 機能:
-echo   - AI声質判定による自動処理（精度95-98%%）
-echo   - 波形エディタで手動編集
-echo   - プロジェクト履歴保存
+echo Features:
+echo   - AI voice detection (95-98%% accuracy)
+echo   - Waveform editor for manual editing
+echo   - Project history
 echo.
 
-REM Pythonの確認
-echo [1/4] Pythonを確認中...
+REM Check Python
+echo [1/5] Checking Python...
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo Pythonが見つかりません。インストールを試みます...
+    echo Python not found. Attempting to install...
     echo.
 
-    REM wingetが使えるか確認
+    REM Check if winget is available
     winget --version >nul 2>&1
     if errorlevel 1 (
-        echo [エラー] wingetが見つかりません。
-        echo 手動でPythonをインストールしてください:
+        echo [Error] winget not found.
+        echo Please install Python manually:
         echo https://www.python.org/downloads/
         echo.
-        echo インストール時に「Add Python to PATH」にチェックを入れてください！
+        echo Make sure to check "Add Python to PATH" during installation!
         pause
         exit /b 1
     )
 
-    echo wingetでPythonをインストール中...
+    echo Installing Python via winget...
     winget install Python.Python.3.11 --accept-source-agreements --accept-package-agreements
 
     if errorlevel 1 (
-        echo [エラー] Pythonのインストールに失敗しました。
-        echo 手動でインストールしてください: https://www.python.org/downloads/
+        echo [Error] Failed to install Python.
+        echo Please install manually: https://www.python.org/downloads/
         pause
         exit /b 1
     )
 
     echo.
-    echo Pythonをインストールしました。
+    echo Python installed.
     echo ================================================
-    echo 重要: 一度このウィンドウを閉じて、
-    echo 新しいコマンドプロンプトでsetup.batを再実行してください。
+    echo Important: Close this window and re-run setup.bat
+    echo in a new command prompt.
     echo ================================================
     pause
     exit /b 0
 )
-echo Pythonを確認しました:
+echo Python found:
 python --version
 
-REM ffmpegの確認
+REM Check ffmpeg
 echo.
-echo [2/4] ffmpegを確認中...
+echo [2/5] Checking ffmpeg...
 ffmpeg -version >nul 2>&1
 if errorlevel 1 (
-    echo ffmpegが見つかりません。インストールを試みます...
+    echo ffmpeg not found. Attempting to install...
     echo.
 
     winget --version >nul 2>&1
     if errorlevel 1 (
-        echo [警告] wingetが見つかりません。
-        echo 手動でffmpegをインストールしてください:
+        echo [Warning] winget not found.
+        echo Please install ffmpeg manually:
         echo https://ffmpeg.org/download.html
         echo.
     ) else (
-        echo wingetでffmpegをインストール中...
+        echo Installing ffmpeg via winget...
         winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
 
         if errorlevel 1 (
-            echo [警告] ffmpegのインストールに失敗しました。
-            echo 手動でインストールしてください: https://ffmpeg.org/download.html
+            echo [Warning] Failed to install ffmpeg.
+            echo Please install manually: https://ffmpeg.org/download.html
         ) else (
-            echo ffmpegをインストールしました。
+            echo ffmpeg installed.
             echo ================================================
-            echo 重要: 一度このウィンドウを閉じて、
-            echo 新しいコマンドプロンプトでsetup.batを再実行してください。
+            echo Important: Close this window and re-run setup.bat
+            echo in a new command prompt.
             echo ================================================
             pause
             exit /b 0
         )
     )
 ) else (
-    echo ffmpegを確認しました
+    echo ffmpeg found
 )
 
-REM pipのアップグレード
+REM Check Node.js
 echo.
-echo [3/4] pipをアップグレード中...
+echo [3/5] Checking Node.js...
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo Node.js not found. Attempting to install...
+    echo.
+
+    winget --version >nul 2>&1
+    if errorlevel 1 (
+        echo [Warning] winget not found.
+        echo Please install Node.js manually:
+        echo https://nodejs.org/
+        echo.
+    ) else (
+        echo Installing Node.js via winget...
+        winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
+
+        if errorlevel 1 (
+            echo [Warning] Failed to install Node.js.
+            echo Please install manually: https://nodejs.org/
+        ) else (
+            echo Node.js installed.
+            echo ================================================
+            echo Important: Close this window and re-run setup.bat
+            echo in a new command prompt.
+            echo ================================================
+            pause
+            exit /b 0
+        )
+    )
+) else (
+    echo Node.js found:
+    node --version
+)
+
+REM Upgrade pip
+echo.
+echo [4/5] Upgrading pip...
 python -m pip install --upgrade pip
 
-REM 依存パッケージのインストール
+REM Install Python dependencies
 echo.
-echo [4/4] 依存パッケージをインストール中...
-echo （初回は5-10分かかることがあります）
+echo [5/5] Installing dependencies...
+echo (This may take 5-10 minutes on first run)
 echo.
 
 pip install -r requirements.txt
 if errorlevel 1 (
     echo.
-    echo [エラー] パッケージのインストールに失敗しました。
+    echo [Error] Failed to install packages.
     pause
     exit /b 1
 )
 
+REM Build frontend if Node.js is available
+node --version >nul 2>&1
+if not errorlevel 1 (
+    echo.
+    echo Building frontend...
+    cd frontend
+    call npm install
+    call npm run build
+    cd ..
+)
+
 echo.
 echo ================================================
-echo  セットアップ完了！
+echo  Setup Complete!
 echo ================================================
 echo.
-echo start.bat をダブルクリックしてアプリを起動してください
+echo Run start.bat to launch the application
 echo.
-echo アクセスURL:
-echo   メインページ:   http://localhost:5003
-echo   波形エディタ:   http://localhost:5003/editor
+echo URL: http://localhost:5003
 echo.
 pause
