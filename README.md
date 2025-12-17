@@ -44,8 +44,11 @@ cd mans_voice_changer
 # 3. Python依存パッケージをインストール
 pip install -r requirements.txt
 
-# 4. フロントエンドをビルド（初回または変更後）
-cd frontend && npm install && npm run build && cd ..
+# 4. フロントエンドをビルド（1行ずつ実行）
+cd frontend
+npm install
+npm run build
+cd ..
 
 # 5. サーバーを起動
 python voice_changer_web.py
@@ -92,8 +95,11 @@ cd mans_voice_changer
 # 4. Pythonパッケージをインストール
 pip3 install -r requirements.txt
 
-# 5. フロントエンドをビルド
-cd frontend && npm install && npm run build && cd ..
+# 5. フロントエンドをビルド（1行ずつ実行）
+cd frontend
+npm install
+npm run build
+cd ..
 
 # 6. サーバーを起動
 python3 voice_changer_web.py
