@@ -35,17 +35,25 @@
 ### 本番モード
 
 ```bash
-# Python依存パッケージをインストール
+# 1. プロジェクトをダウンロード（GitHubからZIPでダウンロードした場合は展開）
+git clone https://github.com/wooftokyo/mans_voice_changer.git
+
+# 2. プロジェクトフォルダに移動（重要！）
+cd mans_voice_changer
+
+# 3. Python依存パッケージをインストール
 pip install -r requirements.txt
 
-# フロントエンドをビルド（初回または変更後）
+# 4. フロントエンドをビルド（初回または変更後）
 cd frontend && npm install && npm run build && cd ..
 
-# サーバーを起動
+# 5. サーバーを起動
 python voice_changer_web.py
 
-# http://localhost:5003 を開く
+# 6. ブラウザで http://localhost:5003 を開く
 ```
+
+> **エラーが出る場合**: `cd mans_voice_changer` でプロジェクトフォルダに移動してからコマンドを実行してください。
 
 ### 開発モード
 
@@ -59,25 +67,35 @@ cd frontend && npm run dev
 # http://localhost:5173 を開く（ホットリロード対応）
 ```
 
-### Windows（バッチファイル）
+### Windows（バッチファイル）- 初心者向け
 
-1. `setup.bat` - 初回セットアップ（5-10分）
-2. `start.bat` - サーバーを起動
-3. ブラウザが自動で http://localhost:5003 を開きます
+1. GitHubから「Code」→「Download ZIP」でダウンロード
+2. ZIPを展開して、フォルダを開く
+3. `setup.bat` をダブルクリック - 初回セットアップ（5-10分）
+4. `start.bat` をダブルクリック - サーバーを起動
+5. ブラウザが自動で http://localhost:5003 を開きます
+
+> **注意**: コマンドプロンプトで手動実行する場合は、必ず `cd mans_voice_changer-main` でフォルダに移動してから実行してください。
 
 ### Mac / Linux
 
 ```bash
-# 依存パッケージをインストール
-brew install python3 ffmpeg
+# 1. 依存パッケージをインストール
+brew install python3 ffmpeg node
 
-# Pythonパッケージをインストール
+# 2. プロジェクトをダウンロード
+git clone https://github.com/wooftokyo/mans_voice_changer.git
+
+# 3. プロジェクトフォルダに移動（重要！）
+cd mans_voice_changer
+
+# 4. Pythonパッケージをインストール
 pip3 install -r requirements.txt
 
-# フロントエンドをビルド
+# 5. フロントエンドをビルド
 cd frontend && npm install && npm run build && cd ..
 
-# サーバーを起動
+# 6. サーバーを起動
 python3 voice_changer_web.py
 ```
 
