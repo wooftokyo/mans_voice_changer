@@ -1,59 +1,53 @@
 @echo off
-chcp 65001 >nul 2>&1
 
 echo ================================================
-echo  男性ボイスチェンジャー 起動
+echo  Male Voice Changer - Starting
 echo ================================================
 echo.
 
-REM スクリプトのディレクトリに移動
 cd /d "%~dp0"
 
-REM Pythonの確認
 python --version >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :no_python
-echo [OK] Python確認済み
+echo [OK] Python found
 goto :check_main
 
 :no_python
-echo [エラー] Pythonが見つかりません。
-echo setup.batを先に実行してください。
+echo [ERROR] Python not found.
+echo Run setup.bat first.
 echo.
 pause
 exit /b 1
 
 :check_main
-REM メインファイルの確認
 if not exist "voice_changer_web.py" goto :no_main
-echo [OK] voice_changer_web.py確認済み
+echo [OK] voice_changer_web.py found
 goto :check_flask
 
 :no_main
-echo [エラー] voice_changer_web.pyが見つかりません。
+echo [ERROR] voice_changer_web.py not found.
 echo.
 pause
 exit /b 1
 
 :check_flask
-REM Flaskの確認
 python -c "import flask" >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :no_flask
-echo [OK] Python依存関係確認済み
+echo [OK] Python packages OK
 goto :check_static
 
 :no_flask
-echo [エラー] Pythonパッケージがインストールされていません。
-echo setup.batを先に実行してください。
+echo [ERROR] Python packages not installed.
+echo Run setup.bat first.
 echo.
 pause
 exit /b 1
 
 :check_static
-REM 静的ファイルの確認
 if exist "static\index.html" goto :static_ok
 
 echo.
-echo [!] フロントエンドがありません。ビルドを試みます...
+echo [!] Frontend not found. Trying to build...
 echo.
 
 node --version >nul 2>&1
@@ -62,77 +56,75 @@ if %ERRORLEVEL% neq 0 goto :no_node
 if not exist "frontend\package.json" goto :no_package
 
 cd frontend
-echo npm install 実行中...
+echo Running npm install...
 call npm install
 if %ERRORLEVEL% neq 0 goto :npm_install_failed
 
-echo npm run build 実行中...
+echo Running npm run build...
 call npm run build
 if %ERRORLEVEL% neq 0 goto :npm_build_failed
 cd ..
 
 if not exist "static\index.html" goto :build_no_output
-echo [OK] フロントエンドビルド完了
+echo [OK] Frontend built
 goto :static_ok
 
 :no_node
-echo [エラー] Node.jsがありません。
+echo [ERROR] Node.js not found.
 echo.
-echo 解決方法:
-echo 1. GitHubから最新版をダウンロードしてください
-echo 2. または Node.js をインストール: https://nodejs.org/
+echo Solutions:
+echo 1. Download latest version from GitHub
+echo 2. Or install Node.js: https://nodejs.org/
 echo.
 pause
 exit /b 1
 
 :no_package
-echo [エラー] frontend/package.jsonがありません。
-echo GitHubから最新版をダウンロードしてください。
+echo [ERROR] frontend/package.json not found.
+echo Download latest version from GitHub.
 echo.
 pause
 exit /b 1
 
 :npm_install_failed
-echo [エラー] npm installに失敗しました。
+echo [ERROR] npm install failed.
 cd ..
 pause
 exit /b 1
 
 :npm_build_failed
-echo [エラー] ビルドに失敗しました。
+echo [ERROR] Build failed.
 cd ..
 pause
 exit /b 1
 
 :build_no_output
-echo [エラー] ビルド後もstatic/index.htmlがありません。
+echo [ERROR] static/index.html still not found after build.
 echo.
 pause
 exit /b 1
 
 :static_ok
-echo [OK] フロントエンド確認済み
+echo [OK] Frontend OK
 echo.
 echo ================================================
 echo  URL: http://localhost:5003
 echo ================================================
 echo.
-echo ブラウザを開いています...
+echo Opening browser...
 
-REM 2秒後にブラウザを開く
 start "" cmd /c "timeout /t 2 >nul && start http://localhost:5003"
 
 echo.
 echo ================================================
-echo  サーバー実行中
-echo  停止: Ctrl+C または このウィンドウを閉じる
+echo  Server running
+echo  Stop: Ctrl+C or close this window
 echo ================================================
 echo.
 
-REM サーバーを起動
 python voice_changer_web.py
 
 echo.
-echo サーバーが停止しました。
+echo Server stopped.
 echo.
 pause

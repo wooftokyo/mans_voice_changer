@@ -1,21 +1,18 @@
 @echo off
-chcp 65001 >nul 2>&1
 
 echo ================================================
-echo  男性ボイスチェンジャー セットアップ
+echo  Male Voice Changer - Setup
 echo ================================================
 echo.
 
-REM スクリプトのディレクトリに移動
 cd /d "%~dp0"
-echo フォルダ: %CD%
+echo Folder: %CD%
 echo.
 
-REM requirements.txtの確認
 if not exist "requirements.txt" goto :no_requirements
 
 echo ================================================
-echo  1. Pythonの確認
+echo  1. Checking Python
 echo ================================================
 echo.
 
@@ -27,76 +24,76 @@ echo.
 goto :check_ffmpeg
 
 :no_requirements
-echo [エラー] requirements.txtが見つかりません。
-echo ZIPを解凍してからsetup.batを実行してください。
+echo [ERROR] requirements.txt not found.
+echo Please extract ZIP first.
 echo.
 pause
 exit /b 1
 
 :install_python
-echo Pythonが見つかりません。
+echo Python not found.
 echo.
 winget --version >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :manual_python
-echo wingetでPythonをインストール中...
+echo Installing Python via winget...
 winget install Python.Python.3.11 --accept-source-agreements --accept-package-agreements
 echo.
 echo ================================================
-echo  Pythonをインストールしました
-echo  このウィンドウを閉じて、setup.batをもう一度実行
+echo  Python installed!
+echo  Close this window and run setup.bat again
 echo ================================================
 echo.
 pause
 exit /b 0
 
 :manual_python
-echo Pythonを手動でインストールしてください:
+echo Please install Python manually:
 echo https://www.python.org/downloads/
 echo.
-echo ※「Add Python to PATH」に必ずチェック！
+echo IMPORTANT: Check "Add Python to PATH"
 echo.
 pause
 exit /b 1
 
 :check_ffmpeg
 echo ================================================
-echo  2. ffmpegの確認
+echo  2. Checking ffmpeg
 echo ================================================
 echo.
 
 ffmpeg -version >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :install_ffmpeg
-echo [OK] ffmpeg確認済み
+echo [OK] ffmpeg found
 echo.
 goto :install_packages
 
 :install_ffmpeg
-echo ffmpegが見つかりません。
+echo ffmpeg not found.
 winget --version >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :manual_ffmpeg
-echo wingetでffmpegをインストール中...
+echo Installing ffmpeg via winget...
 winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
 echo.
 echo ================================================
-echo  ffmpegをインストールしました
-echo  このウィンドウを閉じて、setup.batをもう一度実行
+echo  ffmpeg installed!
+echo  Close this window and run setup.bat again
 echo ================================================
 echo.
 pause
 exit /b 0
 
 :manual_ffmpeg
-echo ffmpegを手動でインストールしてください:
+echo Please install ffmpeg manually:
 echo https://ffmpeg.org/download.html
 echo.
 goto :install_packages
 
 :install_packages
 echo ================================================
-echo  3. Pythonパッケージのインストール
+echo  3. Installing Python packages
 echo ================================================
 echo.
-echo ※初回は10-20分かかります。お待ちください...
+echo This may take 10-20 minutes. Please wait...
 echo.
 
 python -m pip install --upgrade pip >nul 2>&1
@@ -104,38 +101,38 @@ pip install -r requirements.txt
 if %ERRORLEVEL% neq 0 goto :pip_failed
 
 echo.
-echo [OK] パッケージインストール完了
+echo [OK] Packages installed
 echo.
 goto :check_frontend
 
 :pip_failed
 echo.
-echo [エラー] パッケージのインストールに失敗しました。
+echo [ERROR] Package installation failed.
 echo.
 pause
 exit /b 1
 
 :check_frontend
 echo ================================================
-echo  4. フロントエンドの確認
+echo  4. Checking frontend
 echo ================================================
 echo.
 
 if exist "static\index.html" goto :frontend_ok
-echo [警告] static/index.htmlがありません
-echo start.bat実行時にビルドを試みます
+echo [WARNING] static/index.html not found
+echo Will try to build when running start.bat
 goto :done
 
 :frontend_ok
-echo [OK] フロントエンド確認済み
+echo [OK] Frontend found
 
 :done
 echo.
 echo ================================================
 echo.
-echo   セットアップ完了！
+echo   Setup complete!
 echo.
-echo   次: start.bat をダブルクリック
+echo   Next: Double-click start.bat
 echo.
 echo ================================================
 echo.
