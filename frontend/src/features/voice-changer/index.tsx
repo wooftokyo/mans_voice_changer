@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Upload, Download, AudioWaveform } from 'lucide-react'
+import { Upload, Download, AudioWaveform, Copy, CheckCircle, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,8 +27,21 @@ export function VoiceChanger() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [taskId, setTaskId] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [logsCopied, setLogsCopied] = useState(false)
 
   const { addProject } = useProjectHistory()
+
+  const copyLogs = useCallback(() => {
+    const logText = logs.map((log) => `[${log.type || 'info'}] ${log.message}`).join('\n')
+    const fullText = `=== 処理ログ ===\nファイル: ${file?.name || '不明'}\nモード: ${mode === 'ai' ? 'AI声質判定' : '簡易ピッチ検出'}\nピッチシフト: ${pitchShift}半音\nダブルチェック: ${doubleCheck ? '有効' : '無効'}\n\n${logText}`
+    navigator.clipboard.writeText(fullText).then(() => {
+      setLogsCopied(true)
+      toast.success('ログをコピーしました')
+      setTimeout(() => setLogsCopied(false), 3000)
+    }).catch(() => {
+      toast.error('コピーに失敗しました')
+    })
+  }, [logs, file, mode, pitchShift, doubleCheck])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -259,24 +272,65 @@ export function VoiceChanger() {
 
                   {/* Logs */}
                   {logs.length > 0 && (
-                    <ScrollArea className="h-40 rounded-md border bg-muted/30 p-3">
-                      <div className="space-y-1 text-xs font-mono">
-                        {logs.map((log, i) => (
-                          <div
-                            key={i}
-                            className={`${
-                              log.type === 'error'
-                                ? 'text-red-500'
-                                : log.type === 'warning'
-                                ? 'text-yellow-500'
-                                : 'text-muted-foreground'
-                            }`}
-                          >
-                            {log.message}
-                          </div>
-                        ))}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">処理ログ</span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={copyLogs}
+                          className="h-7 text-xs"
+                        >
+                          {logsCopied ? (
+                            <>
+                              <CheckCircle className="mr-1 h-3 w-3 text-green-500" />
+                              コピー完了
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="mr-1 h-3 w-3" />
+                              ログをコピー
+                            </>
+                          )}
+                        </Button>
                       </div>
-                    </ScrollArea>
+                      <ScrollArea className="h-40 rounded-md border bg-muted/30 p-3">
+                        <div className="space-y-1 text-xs font-mono">
+                          {logs.map((log, i) => (
+                            <div
+                              key={i}
+                              className={`${
+                                log.type === 'error'
+                                  ? 'text-red-500'
+                                  : log.type === 'warning'
+                                  ? 'text-yellow-500'
+                                  : 'text-muted-foreground'
+                              }`}
+                            >
+                              {log.message}
+                            </div>
+                          ))}
+                        </div>
+                      </ScrollArea>
+                      {/* Troubleshooting message */}
+                      {state === 'completed' && logs.some(log =>
+                        log.message?.includes('警告') ||
+                        log.message?.includes('0区間') ||
+                        log.message?.includes('検出されませんでした') ||
+                        log.type === 'error'
+                      ) && (
+                        <div className="flex items-start gap-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-3 text-sm">
+                          <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5 flex-shrink-0" />
+                          <div>
+                            <p className="font-medium text-yellow-700 dark:text-yellow-400">問題が発生した場合</p>
+                            <p className="text-muted-foreground text-xs mt-1">
+                              「ログをコピー」ボタンでログをコピーし、開発者に送信してください。
+                              問題の原因特定に役立ちます。
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   {state === 'completed' && (
