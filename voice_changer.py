@@ -11,10 +11,24 @@ import tempfile
 from pathlib import Path
 
 # ffmpegへのPATHを確保（inaSpeechSegmenter等が必要とする）
-ffmpeg_paths = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+import sys
+if sys.platform == 'win32':
+    # Windows
+    path_sep = ';'
+    ffmpeg_paths = [
+        os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\WinGet\Links'),
+        os.path.expandvars(r'%ProgramFiles%\ffmpeg\bin'),
+        os.path.expandvars(r'%USERPROFILE%\scoop\shims'),
+        r'C:\ffmpeg\bin',
+    ]
+else:
+    # Mac/Linux
+    path_sep = ':'
+    ffmpeg_paths = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+
 for p in ffmpeg_paths:
-    if p not in os.environ.get('PATH', ''):
-        os.environ['PATH'] = p + ':' + os.environ.get('PATH', '')
+    if p and p not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = p + path_sep + os.environ.get('PATH', '')
 
 import numpy as np
 import librosa
@@ -1183,6 +1197,10 @@ def process_timbre(
 
                     y_processed[ch, start_sample:end_sample] = processed
 
+                # 最初の数区間はデバッグログを出力
+                if processed_count < 3:
+                    log('pitch', f"  [DEBUG] 区間{processed_count+1}: {start_sec:.1f}s-{end_sec:.1f}s をピッチシフト ({pitch_shift_semitones}半音)")
+
                 processed_count += 1
 
         elif label == 'female':
@@ -1208,7 +1226,13 @@ def process_timbre(
         y_processed = y_processed / max_val * 0.95
 
     # 5. 保存
-    sf.write(output_path, y_processed.T, sr)
+    log('merge', f"音声を保存中: {output_path}")
+    try:
+        sf.write(output_path, y_processed.T, sr)
+        log('merge', f"[OK] 音声保存完了 (サイズ: {os.path.getsize(output_path)} bytes)")
+    except Exception as e:
+        log('merge', f"[ERROR] 音声保存失敗: {str(e)}")
+        raise
 
     log('merge', f"処理完了: {processed_count}区間（男性{male_duration:.1f}秒）をピッチシフト、女性{female_duration:.1f}秒はそのまま")
 
@@ -1328,19 +1352,42 @@ def process_hybrid(
         log('merge', f"処理完了: {male_count}人の男性話者をピッチシフト")
 
 
+def find_ffmpeg() -> str:
+    """ffmpegの実行パスを探す（Windows/Mac/Linux対応）"""
+    import shutil
+
+    # まずPATHから探す
+    ffmpeg_path = shutil.which('ffmpeg')
+    if ffmpeg_path:
+        return ffmpeg_path
+
+    # プラットフォーム別の追加パス
+    if sys.platform == 'win32':
+        additional_paths = [
+            os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\WinGet\Links\ffmpeg.exe'),
+            os.path.expandvars(r'%ProgramFiles%\ffmpeg\bin\ffmpeg.exe'),
+            os.path.expandvars(r'%USERPROFILE%\scoop\shims\ffmpeg.exe'),
+            r'C:\ffmpeg\bin\ffmpeg.exe',
+        ]
+    else:
+        additional_paths = [
+            '/opt/homebrew/bin/ffmpeg',
+            '/usr/local/bin/ffmpeg',
+            '/usr/bin/ffmpeg'
+        ]
+
+    for path in additional_paths:
+        if os.path.exists(path):
+            return path
+
+    # 最後の手段：単純に 'ffmpeg' を返す（PATHにあることを期待）
+    return 'ffmpeg'
+
+
 def extract_audio(video_path: str, audio_path: str) -> None:
     """動画から音声を抽出する"""
-    ffmpeg_paths = [
-        'ffmpeg',
-        '/opt/homebrew/bin/ffmpeg',
-        '/usr/local/bin/ffmpeg',
-        '/usr/bin/ffmpeg'
-    ]
-    ffmpeg_cmd = 'ffmpeg'
-    for path in ffmpeg_paths:
-        if os.path.exists(path):
-            ffmpeg_cmd = path
-            break
+    ffmpeg_cmd = find_ffmpeg()
+    print(f"[DEBUG] Using ffmpeg: {ffmpeg_cmd}")
 
     cmd = [
         ffmpeg_cmd, '-y', '-i', video_path,
@@ -1355,17 +1402,8 @@ def extract_audio(video_path: str, audio_path: str) -> None:
 
 def merge_audio_video(video_path: str, audio_path: str, output_path: str) -> None:
     """処理した音声と元の動画を結合する"""
-    ffmpeg_paths = [
-        'ffmpeg',
-        '/opt/homebrew/bin/ffmpeg',
-        '/usr/local/bin/ffmpeg',
-        '/usr/bin/ffmpeg'
-    ]
-    ffmpeg_cmd = 'ffmpeg'
-    for path in ffmpeg_paths:
-        if os.path.exists(path):
-            ffmpeg_cmd = path
-            break
+    ffmpeg_cmd = find_ffmpeg()
+    print(f"[DEBUG] Using ffmpeg: {ffmpeg_cmd}")
 
     cmd = [
         ffmpeg_cmd, '-y', '-i', video_path, '-i', audio_path,
@@ -1499,7 +1537,22 @@ def calculate_local_threshold(pitches: list, base_threshold: float = 165) -> flo
 
 def pitch_shift_audio(y: np.ndarray, sr: int, semitones: float) -> np.ndarray:
     """音声のピッチをシフトする"""
-    return librosa.effects.pitch_shift(y, sr=sr, n_steps=semitones)
+    if semitones == 0:
+        return y
+
+    try:
+        original_rms = np.sqrt(np.mean(y**2)) if len(y) > 0 else 0
+        result = librosa.effects.pitch_shift(y, sr=sr, n_steps=semitones)
+        result_rms = np.sqrt(np.mean(result**2)) if len(result) > 0 else 0
+
+        # デバッグ: ピッチシフトが実際に適用されたか確認
+        if abs(original_rms - result_rms) < 0.0001 and original_rms > 0.01:
+            print(f"[DEBUG] pitch_shift警告: 入力と出力がほぼ同じ (RMS: {original_rms:.4f} -> {result_rms:.4f})")
+
+        return result
+    except Exception as e:
+        print(f"[ERROR] pitch_shift失敗: {str(e)}")
+        return y  # エラー時は元の音声を返す
 
 
 def process_simple(
