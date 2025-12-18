@@ -83,9 +83,15 @@ def get_ina_segmenter():
     return _ina_segmenter
 
 
-def detect_gender_ina(audio_path: str, progress_callback=None) -> list:
+def detect_gender_ina(audio_path: str, progress_callback=None, chunk_duration: float = 300.0) -> list:
     """
     inaSpeechSegmenterを使用してCNNベースの性別判定を行う
+    長い音声ファイルは分割して処理する（メモリ対策）
+
+    Args:
+        audio_path: 音声ファイルのパス
+        progress_callback: ログ用コールバック
+        chunk_duration: 分割する単位（秒）。デフォルト300秒（5分）
 
     Returns:
         list of tuples: [(label, start, end), ...]
@@ -95,8 +101,50 @@ def detect_gender_ina(audio_path: str, progress_callback=None) -> list:
     log("inaSpeechSegmenter（CNN）で性別を判定中...")
     log(f"音声ファイルパス: {audio_path}")
 
+    # 音声の長さを取得
+    y, sr = librosa.load(audio_path, sr=None, mono=True)
+    total_duration = len(y) / sr
+    log(f"音声の長さ: {total_duration:.1f}秒")
+
     seg = get_ina_segmenter()
-    result = seg(audio_path)
+
+    # 長い音声は分割して処理
+    if total_duration > chunk_duration:
+        log(f"長い音声のため {chunk_duration}秒ごとに分割して処理...")
+        result = []
+        num_chunks = int(np.ceil(total_duration / chunk_duration))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i in range(num_chunks):
+                start_time = i * chunk_duration
+                end_time = min((i + 1) * chunk_duration, total_duration)
+
+                log(f"  チャンク {i+1}/{num_chunks}: {start_time:.0f}秒 - {end_time:.0f}秒")
+
+                # チャンクを抽出して一時ファイルに保存
+                start_sample = int(start_time * sr)
+                end_sample = int(end_time * sr)
+                chunk_audio = y[start_sample:end_sample]
+
+                chunk_path = os.path.join(tmpdir, f"chunk_{i}.wav")
+                sf.write(chunk_path, chunk_audio, sr)
+
+                try:
+                    # チャンクを処理
+                    chunk_result = seg(chunk_path)
+
+                    # 時間オフセットを追加
+                    for label, start, end in chunk_result:
+                        result.append((label, start + start_time, end + start_time))
+                except Exception as e:
+                    log(f"  チャンク {i+1} でエラー: {str(e)}")
+                    # エラーが発生してもこのチャンクはスキップして続行
+                    continue
+
+        log(f"分割処理完了: 合計 {len(result)} 区間")
+    else:
+        # 短い音声はそのまま処理
+        result = seg(audio_path)
 
     # 詳細ログ
     log(f"判定結果: {len(result)}区間検出")
