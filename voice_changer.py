@@ -69,10 +69,17 @@ def get_ina_segmenter():
     """inaSpeechSegmenter（CNN性別判定）を取得（初回のみロード）"""
     global _ina_segmenter
     if _ina_segmenter is None:
-        from inaSpeechSegmenter import Segmenter
-        print("inaSpeechSegmenter（CNN性別判定）を初期化中...")
-        _ina_segmenter = Segmenter()
-        print("inaSpeechSegmenter初期化完了")
+        try:
+            from inaSpeechSegmenter import Segmenter
+            print("inaSpeechSegmenter（CNN性別判定）を初期化中...")
+            print(f"TF_USE_LEGACY_KERAS: {os.environ.get('TF_USE_LEGACY_KERAS', '未設定')}")
+            _ina_segmenter = Segmenter()
+            print("inaSpeechSegmenter初期化完了")
+        except Exception as e:
+            print(f"inaSpeechSegmenter初期化エラー: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
     return _ina_segmenter
 
 
@@ -86,19 +93,28 @@ def detect_gender_ina(audio_path: str, progress_callback=None) -> list:
     """
     log = progress_callback or print
     log("inaSpeechSegmenter（CNN）で性別を判定中...")
+    log(f"音声ファイルパス: {audio_path}")
 
     seg = get_ina_segmenter()
     result = seg(audio_path)
 
-    # 統計を計算
-    male_time = 0
-    female_time = 0
+    # 詳細ログ
+    log(f"判定結果: {len(result)}区間検出")
+
+    # ラベルごとの統計
+    label_counts = {}
+    label_durations = {}
     for label, start, end in result:
         duration = end - start
-        if label == 'male':
-            male_time += duration
-        elif label == 'female':
-            female_time += duration
+        label_counts[label] = label_counts.get(label, 0) + 1
+        label_durations[label] = label_durations.get(label, 0) + duration
+
+    for label in sorted(label_counts.keys()):
+        log(f"  {label}: {label_counts[label]}区間, {label_durations[label]:.1f}秒")
+
+    # 統計を計算
+    male_time = label_durations.get('male', 0)
+    female_time = label_durations.get('female', 0)
 
     log(f"CNN判定結果: 男性={male_time:.1f}秒, 女性={female_time:.1f}秒")
 
@@ -1019,7 +1035,16 @@ def process_timbre(
 
     # 2. inaSpeechSegmenterで性別判定
     log('analyze', "ステップ2: CNNで性別を判定中（初回は時間がかかります）...")
-    segments_raw = detect_gender_ina(audio_path, lambda msg: log('analyze', msg))
+    try:
+        segments_raw = detect_gender_ina(audio_path, lambda msg: log('analyze', msg))
+        log('analyze', f"CNN判定結果: {len(segments_raw)}区間検出")
+        # 詳細ログ
+        male_count = sum(1 for l, s, e in segments_raw if l == 'male')
+        female_count = sum(1 for l, s, e in segments_raw if l == 'female')
+        log('analyze', f"  内訳: 男性={male_count}区間, 女性={female_count}区間")
+    except Exception as e:
+        log('analyze', f"CNN判定エラー: {str(e)}")
+        segments_raw = []
 
     # 3. 後処理: 短い孤立判定を統合
     log('analyze', "ステップ3: 後処理（孤立判定の統合）...")
@@ -1033,6 +1058,14 @@ def process_timbre(
 
     # 4. 男性区間をダブルチェック + ピッチシフト
     log('pitch', "ステップ4: ダブルチェック + ピッチシフト中...")
+    log('pitch', f"ピッチシフト量: {pitch_shift_semitones}半音")
+
+    # 処理前にmale区間の数を確認
+    male_segments_count = sum(1 for l, s, e in segments if l == 'male')
+    log('pitch', f"処理対象の男性区間: {male_segments_count}区間")
+
+    if male_segments_count == 0:
+        log('pitch', "警告: 男性区間が検出されませんでした。処理をスキップします。")
 
     y_processed = y.copy()
     male_duration = 0
@@ -1115,6 +1148,11 @@ def process_timbre(
         log('pitch', f"  ダブルチェックで{double_check_rejected}区間を女性に修正")
 
     log('pitch', f"結果: 男性={male_duration:.1f}秒, 女性={female_duration:.1f}秒")
+    log('pitch', f"実際に処理した区間数: {processed_count}")
+
+    if processed_count == 0:
+        log('pitch', "警告: ピッチシフトが適用された区間がありません！")
+        log('pitch', "原因: 男性区間が検出されなかったか、すべてダブルチェックで棄却されました")
 
     # 4. クリッピング防止
     max_val = np.max(np.abs(y_processed))
@@ -1124,7 +1162,7 @@ def process_timbre(
     # 5. 保存
     sf.write(output_path, y_processed.T, sr)
 
-    log('merge', f"処理完了: 男性{male_duration:.1f}秒をピッチシフト、女性{female_duration:.1f}秒はそのまま")
+    log('merge', f"処理完了: {processed_count}区間（男性{male_duration:.1f}秒）をピッチシフト、女性{female_duration:.1f}秒はそのまま")
 
     return processed_segments
 
