@@ -1352,6 +1352,185 @@ def process_hybrid(
         log('merge', f"処理完了: {male_count}人の男性話者をピッチシフト")
 
 
+def process_precision(
+    audio_path: str,
+    output_path: str,
+    pitch_shift_semitones: float = -3.0,
+    progress_callback=None
+) -> list:
+    """
+    高精度モード: 話者分離 + CNN性別判定
+    - ClearVoiceで話者を分離
+    - 各話者にinaSpeechSegmenter(CNN)で性別判定
+    - 3人以上の会話やノイズが多い環境でも高精度
+    - 処理時間は長いが精度は最高
+
+    Returns:
+        処理された区間のリスト [{'speaker': int, 'is_male': bool, 'duration': float}, ...]
+    """
+    def log(step, message):
+        print(message)
+        if progress_callback:
+            progress_callback(step, message)
+
+    log('separate', "高精度モード: 話者分離 + CNN判定...")
+    log('separate', "※処理時間は長くなりますが、精度が大幅に向上します")
+
+    processed_speakers_info = []
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 1. ClearVoiceで話者分離
+        log('separate', "ステップ1: 話者分離中（AI処理）...")
+        try:
+            separated_files = separate_speakers_clearvoice(
+                audio_path, tmpdir,
+                lambda step, msg: log('separate', msg)
+            )
+        except Exception as e:
+            log('error', f"話者分離エラー: {str(e)}")
+            log('error', "話者分離に失敗しました。通常のCNN判定にフォールバックします...")
+            # フォールバック: 通常のCNN判定
+            return process_timbre(audio_path, output_path, pitch_shift_semitones,
+                                 progress_callback=progress_callback, enable_double_check=True)
+
+        if not separated_files:
+            log('error', "話者が検出されませんでした。通常のCNN判定にフォールバックします...")
+            return process_timbre(audio_path, output_path, pitch_shift_semitones,
+                                 progress_callback=progress_callback, enable_double_check=True)
+
+        log('separate', f"  {len(separated_files)}人の話者を検出しました")
+
+        # 2. 元の音声を読み込み（44100Hzのまま）
+        log('analyze', "ステップ2: 元音声を読み込み中...")
+        y_original, sr_original = librosa.load(audio_path, sr=44100, mono=False)
+        if y_original.ndim == 1:
+            y_original = np.stack([y_original, y_original])
+
+        # 3. 各話者をCNNで性別判定
+        log('analyze', "ステップ3: 各話者の性別をCNN(AI)で判定中...")
+        speaker_info = []
+
+        for i, speaker_file in enumerate(separated_files):
+            log('analyze', f"  話者{i+1}/{len(separated_files)}を分析中...")
+
+            # 話者の音声をCNNで分析
+            try:
+                # 一時的に44100Hzに変換してCNN判定
+                y_sp_16k, _ = librosa.load(speaker_file, sr=16000, mono=True)
+                temp_44k_path = os.path.join(tmpdir, f"speaker_{i}_44k.wav")
+                y_sp_44k = librosa.resample(y_sp_16k, orig_sr=16000, target_sr=44100)
+                sf.write(temp_44k_path, y_sp_44k, 44100)
+
+                # CNN判定
+                segments = detect_gender_ina(temp_44k_path, lambda msg: log('analyze', f"    {msg}"))
+
+                # 男性/女性の割合を計算
+                male_duration = sum(e - s for l, s, e in segments if l == 'male')
+                female_duration = sum(e - s for l, s, e in segments if l == 'female')
+                total_voice = male_duration + female_duration
+
+                if total_voice > 0:
+                    male_ratio = male_duration / total_voice
+                    is_male = male_ratio > 0.5  # 50%以上が男性なら男性と判定
+                else:
+                    # 声がほとんど検出されない場合はピッチで判定
+                    avg_pitch = estimate_pitch_for_segment(y_sp_44k, 44100)
+                    is_male = avg_pitch > 0 and avg_pitch < 165
+
+                speaker_info.append({
+                    'file': speaker_file,
+                    'is_male': is_male,
+                    'male_duration': male_duration,
+                    'female_duration': female_duration,
+                    'male_ratio': male_ratio if total_voice > 0 else 0
+                })
+
+                gender_jp = "男性" if is_male else "女性"
+                if total_voice > 0:
+                    log('analyze', f"  話者{i+1}: {gender_jp} (男性{male_ratio*100:.0f}%, 女性{(1-male_ratio)*100:.0f}%)")
+                else:
+                    log('analyze', f"  話者{i+1}: {gender_jp} (声が少なく、ピッチで判定)")
+
+            except Exception as e:
+                log('analyze', f"  話者{i+1}の分析エラー: {str(e)}")
+                # エラー時はピッチで判定
+                y_sp, _ = librosa.load(speaker_file, sr=16000, mono=True)
+                avg_pitch = estimate_pitch_for_segment(y_sp, 16000)
+                is_male = avg_pitch > 0 and avg_pitch < 165
+                speaker_info.append({
+                    'file': speaker_file,
+                    'is_male': is_male,
+                    'male_duration': 0,
+                    'female_duration': 0,
+                    'male_ratio': 0.5 if is_male else 0
+                })
+                gender_jp = "男性" if is_male else "女性"
+                log('analyze', f"  話者{i+1}: {gender_jp} (エラーによりピッチで判定)")
+
+        # 4. 男性話者の音声をピッチシフト
+        male_count = sum(1 for sp in speaker_info if sp['is_male'])
+        log('pitch', f"ステップ4: 男性話者({male_count}人)の音声をピッチシフト中...")
+
+        processed_speakers = []
+        target_len = y_original.shape[1]
+
+        for i, sp_info in enumerate(speaker_info):
+            # 16kHz音声を44100Hzにリサンプリング
+            y_sp_16k, _ = librosa.load(sp_info['file'], sr=16000, mono=True)
+            y_sp = librosa.resample(y_sp_16k, orig_sr=16000, target_sr=44100)
+
+            if sp_info['is_male']:
+                log('pitch', f"  話者{i+1}（男性）をピッチシフト中... ({pitch_shift_semitones}半音)")
+                y_sp = pitch_shift_audio(y_sp, 44100, pitch_shift_semitones)
+                processed_speakers_info.append({
+                    'speaker': i + 1,
+                    'is_male': True,
+                    'duration': len(y_sp) / 44100,
+                    'pitch_shift': pitch_shift_semitones
+                })
+            else:
+                log('pitch', f"  話者{i+1}（女性）はそのまま")
+                processed_speakers_info.append({
+                    'speaker': i + 1,
+                    'is_male': False,
+                    'duration': len(y_sp) / 44100,
+                    'pitch_shift': 0
+                })
+
+            processed_speakers.append(y_sp)
+
+        # 5. 処理済み音声を合成
+        log('merge', "ステップ5: 音声を合成中...")
+
+        y_mixed = np.zeros(target_len)
+        for sp in processed_speakers:
+            if len(sp) < target_len:
+                sp = np.pad(sp, (0, target_len - len(sp)))
+            elif len(sp) > target_len:
+                sp = sp[:target_len]
+            y_mixed += sp
+
+        # 正規化
+        if len(processed_speakers) > 1:
+            y_mixed = y_mixed / len(processed_speakers)
+
+        # クリッピング防止
+        max_val = np.max(np.abs(y_mixed))
+        if max_val > 1.0:
+            y_mixed = y_mixed / max_val * 0.95
+
+        # ステレオに変換
+        y_stereo = np.stack([y_mixed, y_mixed])
+
+        # 6. 保存
+        log('merge', f"音声を保存中: {output_path}")
+        sf.write(output_path, y_stereo.T, 44100)
+
+        log('merge', f"処理完了: {len(separated_files)}人中{male_count}人の男性話者をピッチシフト")
+
+    return processed_speakers_info
+
+
 def find_ffmpeg() -> str:
     """ffmpegの実行パスを探す（Windows/Mac/Linux対応）"""
     import shutil
@@ -1742,6 +1921,7 @@ def process_video(
       'simple' - 簡易版: Hz判定のみ（高速）
       'timbre' - 声質版: CNN声質判定のみ（inaSpeechSegmenter）
       'hybrid' - ハイブリッド: Hz + 声質（両方で男性判定された区間のみ変換）
+      'precision' - 高精度版: 話者分離 + CNN判定（3人以上の会話に最適）
 
     segment_duration: 簡易版のセグメント長（秒）
     male_threshold: 男性判定のピッチ閾値（Hz）- 簡易版とハイブリッドで使用
@@ -1765,7 +1945,8 @@ def process_video(
     mode_names = {
         'simple': '簡易版（Hz判定のみ）',
         'timbre': '声質版（CNN声質判定）',
-        'hybrid': 'ハイブリッド（Hz＋声質）'
+        'hybrid': 'ハイブリッド（Hz＋声質）',
+        'precision': '高精度版（話者分離＋CNN判定）'
     }
     mode_name = mode_names.get(mode, mode)
 
@@ -1775,6 +1956,8 @@ def process_video(
     log('extract', f"ピッチシフト: {pitch_shift_semitones} semitones")
     if mode in ['simple', 'hybrid']:
         log('extract', f"男性判定閾値: {male_threshold}Hz")
+    if mode == 'precision':
+        log('extract', "※話者分離を使用するため処理時間が長くなります")
 
     saved_audio = None
     processed_segments = []
@@ -1789,7 +1972,16 @@ def process_video(
         log('extract', "音声抽出完了")
 
         # 2. 音声処理（モードに応じて分岐）
-        if mode == 'timbre':
+        if mode == 'precision':
+            # 高精度版（話者分離 + CNN判定）
+            log('analyze', "2. 高精度版で処理中...")
+            processed_segments = process_precision(
+                extracted_audio,
+                processed_audio,
+                pitch_shift_semitones,
+                progress_callback=progress_callback
+            )
+        elif mode == 'timbre':
             # 声質版（セグメントごとのピッチ判定）
             log('analyze', "2. 声質版で処理中...")
             processed_segments = process_timbre(

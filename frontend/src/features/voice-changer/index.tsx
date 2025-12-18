@@ -18,7 +18,7 @@ type ProcessingState = 'idle' | 'uploading' | 'processing' | 'completed' | 'erro
 
 export function VoiceChanger() {
   const [file, setFile] = useState<File | null>(null)
-  const [mode, setMode] = useState<'ai' | 'simple'>('ai')
+  const [mode, setMode] = useState<'ai' | 'simple' | 'precision'>('ai')
   const [pitchShift, setPitchShift] = useState(-3)
   const [doubleCheck, setDoubleCheck] = useState(true)
   const [state, setState] = useState<ProcessingState>('idle')
@@ -33,7 +33,8 @@ export function VoiceChanger() {
 
   const copyLogs = useCallback(() => {
     const logText = logs.map((log) => `[${log.type || 'info'}] ${log.message}`).join('\n')
-    const fullText = `=== 処理ログ ===\nファイル: ${file?.name || '不明'}\nモード: ${mode === 'ai' ? 'AI声質判定' : '簡易ピッチ検出'}\nピッチシフト: ${pitchShift}半音\nダブルチェック: ${doubleCheck ? '有効' : '無効'}\n\n${logText}`
+    const modeNames = { ai: 'AI声質判定', simple: '簡易ピッチ検出', precision: '高精度（話者分離+CNN）' }
+    const fullText = `=== 処理ログ ===\nファイル: ${file?.name || '不明'}\nモード: ${modeNames[mode]}\nピッチシフト: ${pitchShift}半音\nダブルチェック: ${doubleCheck ? '有効' : '無効'}\n\n${logText}`
     navigator.clipboard.writeText(fullText).then(() => {
       setLogsCopied(true)
       toast.success('ログをコピーしました')
@@ -221,7 +222,13 @@ export function VoiceChanger() {
               <CardContent className="space-y-6">
                 <div className="space-y-3">
                   <Label>検出モード</Label>
-                  <RadioGroup value={mode} onValueChange={(v) => setMode(v as 'ai' | 'simple')}>
+                  <RadioGroup value={mode} onValueChange={(v) => setMode(v as 'ai' | 'simple' | 'precision')}>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="precision" id="precision" />
+                      <Label htmlFor="precision" className="cursor-pointer">
+                        <span className="font-medium">高精度</span>（話者分離+CNN、3人以上の会話向け）
+                      </Label>
+                    </div>
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="ai" id="ai" />
                       <Label htmlFor="ai" className="cursor-pointer">
@@ -235,6 +242,11 @@ export function VoiceChanger() {
                       </Label>
                     </div>
                   </RadioGroup>
+                  {mode === 'precision' && (
+                    <p className="text-xs text-amber-600 dark:text-amber-500">
+                      ※処理時間は長くなりますが、複数人の会話で精度が大幅に向上します
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-3">

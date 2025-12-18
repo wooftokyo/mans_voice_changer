@@ -60,7 +60,7 @@ export interface ApplyPitchResponse {
 export async function uploadFile(
   file: File,
   options: {
-    mode?: 'ai' | 'simple'
+    mode?: 'ai' | 'simple' | 'precision'
     pitchShift?: number
     doubleCheck?: boolean
     onProgress?: (progress: number) => void
@@ -68,9 +68,13 @@ export async function uploadFile(
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append('file', file)
-  // Backend expects: 'timbre' (AI voice quality), 'simple' (Hz only), 'hybrid' (both)
-  // Original HTML used 'timbre' as default for AI detection
-  const backendMode = options.mode === 'ai' ? 'timbre' : 'simple'
+  // Backend expects: 'timbre' (AI voice quality), 'simple' (Hz only), 'precision' (speaker separation + CNN)
+  const modeMap: Record<string, string> = {
+    ai: 'timbre',
+    simple: 'simple',
+    precision: 'precision'
+  }
+  const backendMode = modeMap[options.mode || 'ai'] || 'timbre'
   formData.append('mode', backendMode)
   formData.append('pitch', String(options.pitchShift || -3))
   formData.append('double_check', options.doubleCheck ? '1' : '0')
