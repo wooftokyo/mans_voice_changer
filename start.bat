@@ -7,13 +7,30 @@ echo.
 
 cd /d "%~dp0"
 
+REM Check if venv exists
+if not exist "venv\Scripts\activate.bat" goto :no_venv
+echo [OK] venv found
+goto :activate_venv
+
+:no_venv
+echo [ERROR] venv not found.
+echo Run setup.bat first.
+echo.
+pause
+exit /b 1
+
+:activate_venv
+echo Activating venv...
+call venv\Scripts\activate.bat
+
+REM Check Python in venv
 python --version >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :no_python
-echo [OK] Python found
+echo [OK] Python (venv)
 goto :check_main
 
 :no_python
-echo [ERROR] Python not found.
+echo [ERROR] Python not found in venv.
 echo Run setup.bat first.
 echo.
 pause
@@ -117,7 +134,7 @@ start "" cmd /c "timeout /t 2 >nul && start http://localhost:5003"
 
 echo.
 echo ================================================
-echo  Server running
+echo  Server running (venv activated)
 echo  Stop: Ctrl+C or close this window
 echo ================================================
 echo.

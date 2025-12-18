@@ -65,7 +65,7 @@ ffmpeg -version >nul 2>&1
 if %ERRORLEVEL% neq 0 goto :install_ffmpeg
 echo [OK] ffmpeg found
 echo.
-goto :install_packages
+goto :create_venv
 
 :install_ffmpeg
 echo ffmpeg not found.
@@ -86,17 +86,48 @@ exit /b 0
 echo Please install ffmpeg manually:
 echo https://ffmpeg.org/download.html
 echo.
+goto :create_venv
+
+:create_venv
+echo ================================================
+echo  3. Creating virtual environment
+echo ================================================
+echo.
+
+if exist "venv\Scripts\activate.bat" (
+    echo [OK] venv already exists
+    goto :install_packages
+)
+
+echo Creating venv...
+python -m venv venv
+if %ERRORLEVEL% neq 0 goto :venv_failed
+echo [OK] venv created
 goto :install_packages
 
+:venv_failed
+echo [ERROR] Failed to create venv
+pause
+exit /b 1
+
 :install_packages
+echo.
 echo ================================================
-echo  3. Installing Python packages
+echo  4. Installing Python packages (in venv)
 echo ================================================
 echo.
 echo This may take 10-20 minutes. Please wait...
 echo.
 
+call venv\Scripts\activate.bat
+
 python -m pip install --upgrade pip >nul 2>&1
+
+echo Installing numpy (version 1.x for TensorFlow compatibility)...
+pip install "numpy>=1.21.0,<2.0"
+if %ERRORLEVEL% neq 0 goto :pip_failed
+
+echo Installing other packages...
 pip install -r requirements.txt
 if %ERRORLEVEL% neq 0 goto :pip_failed
 
@@ -114,7 +145,7 @@ exit /b 1
 
 :check_frontend
 echo ================================================
-echo  4. Checking frontend
+echo  5. Checking frontend
 echo ================================================
 echo.
 
