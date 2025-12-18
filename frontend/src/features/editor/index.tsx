@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSearch } from '@tanstack/react-router'
 import {
-  Upload, Play, Pause, Download, Trash2, Plus, AudioWaveform,
-  SkipBack, SkipForward, Volume2, ZoomIn, ZoomOut, RefreshCw,
+  Upload, Play, Pause, Download, Trash2, AudioWaveform,
+  SkipBack, SkipForward, Volume2, ZoomIn, ZoomOut,
   ChevronDown, ChevronUp, Clock, Loader2, MousePointer2, Move
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -19,7 +19,7 @@ import { Progress } from '@/components/ui/progress'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
-import { uploadForEditor, applyManualPitch, getAudioUrl, getVideoUrl, getDownloadUrl, getStatus, pollStatus, type Region, type ProcessedSegment, type StatusResponse } from '@/lib/api'
+import { uploadForEditor, applyManualPitch, getAudioUrl, getVideoUrl, getDownloadUrl, getStatus, pollStatus, type ProcessedSegment, type StatusResponse } from '@/lib/api'
 
 interface RegionData {
   id: string
@@ -58,11 +58,14 @@ export function WaveformEditor() {
   const [direction, setDirection] = useState<'down' | 'up'>('down')
   const [shift, setShift] = useState(3)
 
-  // Regions list
-  const [regions, setRegions] = useState<RegionData[]>([])
+  // Applied regions (already processed)
+  const [appliedRegions, setAppliedRegions] = useState<RegionData[]>([])
 
   // Processed segments from auto-processing (for display only)
   const [processedSegments, setProcessedSegments] = useState<ProcessedSegment[]>([])
+
+  // Track if any changes have been made (for download availability)
+  const [hasChanges, setHasChanges] = useState(false)
 
   // Store edit mode in a ref for use in event handlers (needed before initialization)
   const editModeRef = useRef(editMode)
@@ -183,11 +186,12 @@ export function WaveformEditor() {
     setIsLoading(true)
     wavesurferRef.current.load(getAudioUrl(newTaskId))
 
-    // Clear existing manual regions only (keep processed segments separate)
+    // Clear existing regions (but keep applied regions for display)
     regionsRef.current?.clearRegions()
-    setRegions([])
     setSelection(null)
     setProcessedSegments([])
+    setAppliedRegions([])
+    setHasChanges(false)
 
     // Fetch processed segments from backend
     getStatus(newTaskId).then((status) => {
@@ -351,92 +355,43 @@ export function WaveformEditor() {
     }
   }
 
-  const handleAddRegion = () => {
+  // Apply pitch shift immediately to the selected region
+  const handleApplyPitch = async () => {
     if (!selection) {
       toast.error('先に区間を選択してください（波形をドラッグ）')
       return
     }
 
+    if (!taskId) {
+      toast.error('ファイルをアップロードしてください')
+      return
+    }
+
     const regionId = crypto.randomUUID()
     const color = direction === 'down' ? 'rgba(239, 68, 68, 0.4)' : 'rgba(34, 197, 94, 0.4)'
-
-    // Add visual region
-    regionsRef.current?.addRegion({
+    const regionData: RegionData = {
       id: regionId,
       start: selection.start,
       end: selection.end,
-      color,
-      drag: false,
-      resize: false,
-    })
-
-    // Add to list
-    setRegions((prev) => [
-      ...prev,
-      {
-        id: regionId,
-        start: selection.start,
-        end: selection.end,
-        direction,
-        shift,
-      },
-    ])
-
-    // Clear selection
-    setSelection(null)
-    regionsRef.current?.getRegions().forEach((r) => {
-      if (r.color?.includes('234, 179, 8')) {
-        r.remove()
-      }
-    })
-
-    toast.success('区間を追加しました')
-  }
-
-  const handleRemoveRegion = (id: string) => {
-    regionsRef.current?.getRegions().forEach((r) => {
-      if (r.id === id) {
-        r.remove()
-      }
-    })
-    setRegions((prev) => prev.filter((r) => r.id !== id))
-  }
-
-  const handleClearAllRegions = () => {
-    regions.forEach((r) => {
-      regionsRef.current?.getRegions().forEach((wr) => {
-        if (wr.id === r.id) {
-          wr.remove()
-        }
-      })
-    })
-    setRegions([])
-    toast.success('全ての区間を削除しました')
-  }
-
-  const handleProcess = async () => {
-    if (!taskId || regions.length === 0) {
-      toast.error('処理する区間がありません')
-      return
+      direction,
+      shift,
     }
 
     setIsProcessing(true)
     setProcessingProgress(0)
-    setProcessingStep('処理を開始中...')
+    setProcessingStep('ピッチを適用中...')
 
     try {
-      // Convert direction + shift to pitch for backend
-      const regionData: Region[] = regions.map((r) => ({
-        start: r.start,
-        end: r.end,
-        direction: r.direction,
-        shift: r.shift,
-        pitch: r.direction === 'down' ? -Math.abs(r.shift) : Math.abs(r.shift),
-      }))
-
+      // Send single region to backend
       const response = await applyManualPitch({
         task_id: taskId,
-        regions: regionData,
+        regions: [{
+          start: selection.start,
+          end: selection.end,
+          direction,
+          shift,
+          pitch: direction === 'down' ? -Math.abs(shift) : Math.abs(shift),
+        }],
       })
 
       // Poll for completion
@@ -445,11 +400,37 @@ export function WaveformEditor() {
         setProcessingStep(status.step || status.message || '処理中...')
       })
 
-      toast.success('処理が完了しました！')
+      // Add visual region to show it's been processed
+      regionsRef.current?.addRegion({
+        id: regionId,
+        start: selection.start,
+        end: selection.end,
+        color,
+        drag: false,
+        resize: false,
+      })
 
-      // Load the new audio after processing is complete
+      // Add to applied list
+      setAppliedRegions((prev) => [...prev, regionData])
+      setHasChanges(true)
+
+      // Update taskId to the new processed version
       setTaskId(response.task_id)
-      loadTask(response.task_id)
+
+      // Reload the processed audio without clearing applied regions
+      if (wavesurferRef.current) {
+        wavesurferRef.current.load(getAudioUrl(response.task_id))
+      }
+
+      // Clear selection
+      setSelection(null)
+      regionsRef.current?.getRegions().forEach((r) => {
+        if (r.color?.includes('234, 179, 8')) {
+          r.remove()
+        }
+      })
+
+      toast.success(`ピッチを${direction === 'down' ? '下げ' : '上げ'}ました（${shift}半音）`)
 
     } catch (error) {
       toast.error('処理に失敗しました: ' + (error instanceof Error ? error.message : '不明なエラー'))
@@ -458,6 +439,19 @@ export function WaveformEditor() {
       setProcessingProgress(0)
       setProcessingStep('')
     }
+  }
+
+  const handleClearAppliedRegions = () => {
+    // Only clear visual display, not the actual audio changes
+    appliedRegions.forEach((r) => {
+      regionsRef.current?.getRegions().forEach((wr) => {
+        if (wr.id === r.id) {
+          wr.remove()
+        }
+      })
+    })
+    setAppliedRegions([])
+    toast.success('表示をクリアしました（音声の変更は保持されます）')
   }
 
   const handleDownload = (type: 'video' | 'audio') => {
@@ -820,7 +814,7 @@ export function WaveformEditor() {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">ピッチ編集</CardTitle>
                   <CardDescription>
-                    波形をドラッグして区間を選択 → 設定を調整 → リストに追加 → まとめて処理
+                    波形をドラッグして区間を選択 → 設定を調整 → 「ピッチ適用」で即時処理
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -892,17 +886,23 @@ export function WaveformEditor() {
                           選択区間: {formatTime(selection.start)} 〜 {formatTime(selection.end)}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          長さ: {(selection.end - selection.start).toFixed(2)}秒
+                          長さ: {(selection.end - selection.start).toFixed(2)}秒 · {direction === 'down' ? '下げる' : '上げる'} {shift}半音
                         </div>
                       </div>
-                      <Button onClick={handleAddRegion}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        追加
+                      <Button onClick={handleApplyPitch} disabled={isProcessing}>
+                        {isProcessing ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : direction === 'down' ? (
+                          <ChevronDown className="mr-2 h-4 w-4" />
+                        ) : (
+                          <ChevronUp className="mr-2 h-4 w-4" />
+                        )}
+                        ピッチ適用
                       </Button>
                     </div>
                   ) : (
                     <div className="text-sm text-muted-foreground text-center py-3 border border-dashed rounded-lg">
-                      波形をドラッグして区間を選択してください
+                      波形をドラッグして区間を選択 → 「ピッチ適用」で即時処理
                     </div>
                   )}
                 </CardContent>
@@ -912,97 +912,98 @@ export function WaveformEditor() {
 
           {/* Sidebar */}
           <div className="space-y-4">
-            {/* Region List */}
+            {/* Applied Regions List */}
             {taskId && (
               <Card>
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">編集リスト</CardTitle>
-                    {regions.length > 0 && (
+                    <CardTitle className="text-base">適用済み</CardTitle>
+                    {appliedRegions.length > 0 && (
                       <Button
                         variant="ghost"
                         size="sm"
                         className="h-7 text-xs"
-                        onClick={handleClearAllRegions}
+                        onClick={handleClearAppliedRegions}
                       >
                         <Trash2 className="mr-1 h-3 w-3" />
-                        全削除
+                        表示クリア
                       </Button>
                     )}
                   </div>
                   <CardDescription>
-                    {regions.length === 0
-                      ? '区間を追加してください'
-                      : `${regions.length} 件の区間`
+                    {appliedRegions.length === 0
+                      ? '区間を選択してピッチ適用'
+                      : `${appliedRegions.length} 件を処理済み`
                     }
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {regions.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
+                  {appliedRegions.length === 0 ? (
+                    <div className="text-center py-6 text-muted-foreground">
                       <AudioWaveform className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                      <p className="text-sm">まだ区間がありません</p>
+                      <p className="text-sm">波形をドラッグして</p>
+                      <p className="text-sm">区間を選択してください</p>
                     </div>
                   ) : (
-                    <>
-                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
-                        {regions.map((region) => (
-                          <div
-                            key={region.id}
-                            className={`flex items-center gap-2 p-2.5 rounded-lg text-sm transition-colors ${
-                              region.direction === 'down'
-                                ? 'bg-red-500/10 border border-red-500/30 hover:bg-red-500/20'
-                                : 'bg-green-500/10 border border-green-500/30 hover:bg-green-500/20'
-                            }`}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="font-mono text-xs">
-                                {formatTime(region.start)} → {formatTime(region.end)}
-                              </div>
-                              <div className="flex items-center gap-2 mt-1">
-                                <Badge
-                                  variant="outline"
-                                  className={`text-xs ${
-                                    region.direction === 'down'
-                                      ? 'border-red-500/50 text-red-600'
-                                      : 'border-green-500/50 text-green-600'
-                                  }`}
-                                >
-                                  {region.direction === 'down' ? '↓' : '↑'} {region.shift}半音
-                                </Badge>
-                              </div>
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                      {appliedRegions.map((region) => (
+                        <div
+                          key={region.id}
+                          className={`flex items-center gap-2 p-2.5 rounded-lg text-sm ${
+                            region.direction === 'down'
+                              ? 'bg-red-500/10 border border-red-500/30'
+                              : 'bg-green-500/10 border border-green-500/30'
+                          }`}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="font-mono text-xs">
+                              {formatTime(region.start)} → {formatTime(region.end)}
                             </div>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-7 w-7 shrink-0"
-                              onClick={() => handleRemoveRegion(region.id)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            <div className="flex items-center gap-2 mt-1">
+                              <Badge
+                                variant="outline"
+                                className={`text-xs ${
+                                  region.direction === 'down'
+                                    ? 'border-red-500/50 text-red-600'
+                                    : 'border-green-500/50 text-green-600'
+                                }`}
+                              >
+                                {region.direction === 'down' ? '↓' : '↑'} {region.shift}半音
+                              </Badge>
+                            </div>
                           </div>
-                        ))}
-                      </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
-                      <Button
-                        className="w-full mt-3"
-                        size="lg"
-                        onClick={handleProcess}
-                        disabled={isLoading || isProcessing || regions.length === 0}
-                      >
-                        {isProcessing ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            処理中...
-                          </>
-                        ) : (
-                          <>
-                            <RefreshCw className="mr-2 h-4 w-4" />
-                            まとめて処理 ({regions.length}件)
-                          </>
-                        )}
-                      </Button>
-                    </>
+                  {/* Download Section */}
+                  {hasChanges && (
+                    <div className="pt-3 border-t space-y-2">
+                      <p className="text-xs text-muted-foreground text-center">
+                        編集が完了したらダウンロード
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => handleDownload('video')}
+                        >
+                          <Download className="mr-1.5 h-3.5 w-3.5" />
+                          MP4
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => handleDownload('audio')}
+                        >
+                          <Download className="mr-1.5 h-3.5 w-3.5" />
+                          WAV
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 </CardContent>
               </Card>
