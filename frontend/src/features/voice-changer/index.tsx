@@ -11,7 +11,7 @@ import { Switch } from '@/components/ui/switch'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { uploadFile, pollStatus, getDownloadUrl, type StatusResponse, type LogEntry } from '@/lib/api'
+import { uploadFile, pollStatus, getStatus, getDownloadUrl, type StatusResponse, type LogEntry } from '@/lib/api'
 import { useProjectHistory } from './use-project-history'
 
 type ProcessingState = 'idle' | 'uploading' | 'processing' | 'completed' | 'error'
@@ -79,6 +79,8 @@ export function VoiceChanger() {
     setMessage('ファイルをアップロード中...')
     setLogs([])
 
+    let uploadedTaskId: string | null = null
+
     try {
       const response = await uploadFile(file, {
         mode,
@@ -90,6 +92,7 @@ export function VoiceChanger() {
         },
       })
 
+      uploadedTaskId = response.task_id
       setTaskId(response.task_id)
       setState('processing')
       setMessage('処理中...')
@@ -117,7 +120,26 @@ export function VoiceChanger() {
       toast.success('処理が完了しました！')
     } catch (error) {
       setState('error')
-      setMessage(error instanceof Error ? error.message : 'エラーが発生しました')
+      const errorMessage = error instanceof Error ? error.message : 'エラーが発生しました'
+      setMessage(errorMessage)
+
+      // エラー時もログを取得試行
+      if (uploadedTaskId) {
+        try {
+          const status = await getStatus(uploadedTaskId)
+          if (status.logs && status.logs.length > 0) {
+            setLogs(status.logs)
+          } else {
+            // ログがない場合はエラーメッセージをログとして追加
+            setLogs([{ message: `エラー: ${errorMessage}`, type: 'error' }])
+          }
+        } catch {
+          setLogs([{ message: `エラー: ${errorMessage}`, type: 'error' }])
+        }
+      } else {
+        setLogs([{ message: `エラー: ${errorMessage}`, type: 'error' }])
+      }
+
       toast.error('処理に失敗しました')
     }
   }
@@ -256,7 +278,7 @@ export function VoiceChanger() {
             </Card>
 
             {/* Progress */}
-            {(state === 'uploading' || state === 'processing' || state === 'completed') && (
+            {(state === 'uploading' || state === 'processing' || state === 'completed' || state === 'error') && (
               <Card>
                 <CardHeader>
                   <CardTitle>進捗</CardTitle>
@@ -313,7 +335,7 @@ export function VoiceChanger() {
                         </div>
                       </ScrollArea>
                       {/* Troubleshooting message */}
-                      {state === 'completed' && logs.some(log =>
+                      {(state === 'completed' || state === 'error') && logs.some(log =>
                         log.message?.includes('警告') ||
                         log.message?.includes('0区間') ||
                         log.message?.includes('検出されませんでした') ||
