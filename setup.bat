@@ -1,255 +1,141 @@
 @echo off
-setlocal enabledelayedexpansion
 chcp 65001 >nul 2>&1
+
+echo ================================================
+echo  男性ボイスチェンジャー セットアップ
+echo ================================================
+echo.
 
 REM スクリプトのディレクトリに移動
 cd /d "%~dp0"
-
-echo ================================================
-echo  男性ボイスチェンジャー セットアップ (Windows)
-echo ================================================
-echo.
-echo 現在のフォルダ: %CD%
+echo フォルダ: %CD%
 echo.
 
 REM requirements.txtの確認
-if not exist "requirements.txt" (
-    echo [エラー] requirements.txtが見つかりません。
-    echo 正しいフォルダでsetup.batを実行してください。
-    echo.
-    echo 現在のフォルダ: %CD%
-    echo.
-    pause
-    exit /b 1
-)
+if not exist "requirements.txt" goto :no_requirements
 
 echo ================================================
-echo  ステップ 1/5: Pythonの確認
+echo  1. Pythonの確認
 echo ================================================
 echo.
 
 python --version >nul 2>&1
-if !ERRORLEVEL! neq 0 (
-    echo Pythonが見つかりません。
-    echo.
-
-    REM wingetが利用可能か確認
-    winget --version >nul 2>&1
-    if !ERRORLEVEL! neq 0 (
-        echo ================================================
-        echo  Pythonを手動でインストールしてください
-        echo ================================================
-        echo.
-        echo 1. https://www.python.org/downloads/ を開く
-        echo 2. 「Download Python 3.xx」をクリック
-        echo 3. インストール時に「Add Python to PATH」に必ずチェック！
-        echo.
-        pause
-        exit /b 1
-    )
-
-    echo wingetでPythonをインストール中...
-    echo （数分かかる場合があります）
-    echo.
-    winget install Python.Python.3.11 --accept-source-agreements --accept-package-agreements
-
-    echo.
-    echo ================================================
-    echo  Pythonをインストールしました！
-    echo ================================================
-    echo.
-    echo 重要: PATHを反映するため、以下の手順を実行してください：
-    echo.
-    echo   1. 何かキーを押してこのウィンドウを閉じる
-    echo   2. setup.bat をもう一度ダブルクリック
-    echo.
-    echo ================================================
-    pause
-    exit /b 0
-)
-
-echo [OK] Pythonが見つかりました
+if %ERRORLEVEL% neq 0 goto :install_python
+echo [OK] Python:
 python --version
+echo.
+goto :check_ffmpeg
 
+:no_requirements
+echo [エラー] requirements.txtが見つかりません。
+echo ZIPを解凍してからsetup.batを実行してください。
+echo.
+pause
+exit /b 1
+
+:install_python
+echo Pythonが見つかりません。
+echo.
+winget --version >nul 2>&1
+if %ERRORLEVEL% neq 0 goto :manual_python
+echo wingetでPythonをインストール中...
+winget install Python.Python.3.11 --accept-source-agreements --accept-package-agreements
 echo.
 echo ================================================
-echo  ステップ 2/5: ffmpegの確認
+echo  Pythonをインストールしました
+echo  このウィンドウを閉じて、setup.batをもう一度実行
+echo ================================================
+echo.
+pause
+exit /b 0
+
+:manual_python
+echo Pythonを手動でインストールしてください:
+echo https://www.python.org/downloads/
+echo.
+echo ※「Add Python to PATH」に必ずチェック！
+echo.
+pause
+exit /b 1
+
+:check_ffmpeg
+echo ================================================
+echo  2. ffmpegの確認
 echo ================================================
 echo.
 
 ffmpeg -version >nul 2>&1
-if !ERRORLEVEL! neq 0 (
-    echo ffmpegが見つかりません。
+if %ERRORLEVEL% neq 0 goto :install_ffmpeg
+echo [OK] ffmpeg確認済み
+echo.
+goto :install_packages
 
-    winget --version >nul 2>&1
-    if !ERRORLEVEL! neq 0 (
-        echo [警告] wingetが見つかりません。ffmpegを手動でインストールしてください。
-        echo https://ffmpeg.org/download.html
-        echo.
-    ) else (
-        echo wingetでffmpegをインストール中...
-        winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
-
-        if !ERRORLEVEL! equ 0 (
-            echo.
-            echo ================================================
-            echo  ffmpegをインストールしました！
-            echo ================================================
-            echo.
-            echo 重要: PATHを反映するため、以下の手順を実行してください：
-            echo.
-            echo   1. 何かキーを押してこのウィンドウを閉じる
-            echo   2. setup.bat をもう一度ダブルクリック
-            echo.
-            echo ================================================
-            pause
-            exit /b 0
-        ) else (
-            echo [警告] ffmpegのインストールに失敗しました。
-            echo 手動でインストールしてください: https://ffmpeg.org/download.html
-            echo.
-        )
-    )
-) else (
-    echo [OK] ffmpegが見つかりました
-)
-
+:install_ffmpeg
+echo ffmpegが見つかりません。
+winget --version >nul 2>&1
+if %ERRORLEVEL% neq 0 goto :manual_ffmpeg
+echo wingetでffmpegをインストール中...
+winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
 echo.
 echo ================================================
-echo  ステップ 3/5: Node.jsの確認
+echo  ffmpegをインストールしました
+echo  このウィンドウを閉じて、setup.batをもう一度実行
 echo ================================================
 echo.
+pause
+exit /b 0
 
-set "NODE_INSTALLED=0"
-node --version >nul 2>&1
-if !ERRORLEVEL! neq 0 (
-    echo Node.jsが見つかりません。
-
-    winget --version >nul 2>&1
-    if !ERRORLEVEL! neq 0 (
-        echo [警告] wingetが見つかりません。Node.jsを手動でインストールしてください。
-        echo https://nodejs.org/
-        echo.
-    ) else (
-        echo wingetでNode.jsをインストール中...
-        winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-
-        if !ERRORLEVEL! equ 0 (
-            echo.
-            echo ================================================
-            echo  Node.jsをインストールしました！
-            echo ================================================
-            echo.
-            echo 重要: PATHを反映するため、以下の手順を実行してください：
-            echo.
-            echo   1. 何かキーを押してこのウィンドウを閉じる
-            echo   2. setup.bat をもう一度ダブルクリック
-            echo.
-            echo ================================================
-            pause
-            exit /b 0
-        ) else (
-            echo [警告] Node.jsのインストールに失敗しました。
-            echo 手動でインストールしてください: https://nodejs.org/
-            echo.
-        )
-    )
-) else (
-    echo [OK] Node.jsが見つかりました
-    node --version
-    set "NODE_INSTALLED=1"
-)
-
+:manual_ffmpeg
+echo ffmpegを手動でインストールしてください:
+echo https://ffmpeg.org/download.html
 echo.
+goto :install_packages
+
+:install_packages
 echo ================================================
-echo  ステップ 4/5: Pythonパッケージのインストール
+echo  3. Pythonパッケージのインストール
 echo ================================================
 echo.
+echo ※初回は10-20分かかります。お待ちください...
+echo.
 
-echo pipをアップグレード中...
 python -m pip install --upgrade pip >nul 2>&1
-
-echo 依存パッケージをインストール中...
-echo （初回は10-20分かかる場合があります。お待ちください...）
-echo.
-
 pip install -r requirements.txt
-if !ERRORLEVEL! neq 0 (
-    echo.
-    echo [エラー] パッケージのインストールに失敗しました。
-    echo.
-    echo 考えられる原因:
-    echo   - インターネット接続を確認してください
-    echo   - ウイルス対策ソフトが干渉している可能性があります
-    echo   - 管理者権限で実行してみてください
-    echo.
-    pause
-    exit /b 1
-)
+if %ERRORLEVEL% neq 0 goto :pip_failed
 
 echo.
-echo [OK] Pythonパッケージのインストール完了
-
+echo [OK] パッケージインストール完了
 echo.
+goto :check_frontend
+
+:pip_failed
+echo.
+echo [エラー] パッケージのインストールに失敗しました。
+echo.
+pause
+exit /b 1
+
+:check_frontend
 echo ================================================
-echo  ステップ 5/5: フロントエンドのビルド
+echo  4. フロントエンドの確認
 echo ================================================
 echo.
 
-REM Node.jsを再確認（インストール直後の場合もあるため）
-node --version >nul 2>&1
-if !ERRORLEVEL! neq 0 (
-    echo [スキップ] Node.jsがないためフロントエンドビルドをスキップ
-    echo.
-    echo [!] start.bat実行時に自動でビルドされます
-    goto :setup_done
-)
+if exist "static\index.html" goto :frontend_ok
+echo [警告] static/index.htmlがありません
+echo start.bat実行時にビルドを試みます
+goto :done
 
-if not exist "frontend\package.json" (
-    echo [警告] frontend/package.jsonが見つかりません
-    goto :setup_done
-)
+:frontend_ok
+echo [OK] フロントエンド確認済み
 
-echo フロントエンドをビルド中...
-pushd frontend
-
-echo npm install を実行中...
-call npm install
-if !ERRORLEVEL! neq 0 (
-    echo [警告] npm installに失敗しました
-    popd
-    goto :setup_done
-)
-
-echo npm run build を実行中...
-call npm run build
-if !ERRORLEVEL! neq 0 (
-    echo [警告] ビルドに失敗しました
-    popd
-    goto :setup_done
-)
-
-popd
-
-if exist "static\index.html" (
-    echo [OK] フロントエンドのビルド完了
-) else (
-    echo [警告] ビルドは完了しましたが、static/index.htmlが見つかりません
-)
-
-:setup_done
-
+:done
 echo.
 echo ================================================
 echo.
-echo   セットアップが完了しました！
+echo   セットアップ完了！
 echo.
-echo ================================================
-echo.
-echo 次のステップ:
-echo   start.bat をダブルクリックしてアプリを起動
-echo.
-echo アプリのURL: http://localhost:5003
+echo   次: start.bat をダブルクリック
 echo.
 echo ================================================
 echo.

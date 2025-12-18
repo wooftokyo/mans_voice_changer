@@ -1,96 +1,117 @@
 @echo off
-setlocal enabledelayedexpansion
 chcp 65001 >nul 2>&1
+
+echo ================================================
+echo  男性ボイスチェンジャー 起動
+echo ================================================
+echo.
 
 REM スクリプトのディレクトリに移動
 cd /d "%~dp0"
 
-echo ================================================
-echo  男性ボイスチェンジャー - 起動中...
-echo ================================================
-echo.
-
 REM Pythonの確認
 python --version >nul 2>&1
-if !ERRORLEVEL! neq 0 (
-    echo [エラー] Pythonが見つかりません。
-    echo 先にsetup.batを実行してください。
-    pause
-    exit /b 1
-)
+if %ERRORLEVEL% neq 0 goto :no_python
 echo [OK] Python確認済み
+goto :check_main
 
+:no_python
+echo [エラー] Pythonが見つかりません。
+echo setup.batを先に実行してください。
+echo.
+pause
+exit /b 1
+
+:check_main
 REM メインファイルの確認
-if not exist "voice_changer_web.py" (
-    echo [エラー] voice_changer_web.pyが見つかりません。
-    pause
-    exit /b 1
-)
+if not exist "voice_changer_web.py" goto :no_main
 echo [OK] voice_changer_web.py確認済み
+goto :check_flask
 
-REM 依存パッケージの確認
+:no_main
+echo [エラー] voice_changer_web.pyが見つかりません。
+echo.
+pause
+exit /b 1
+
+:check_flask
+REM Flaskの確認
 python -c "import flask" >nul 2>&1
-if !ERRORLEVEL! neq 0 (
-    echo [エラー] Flaskがインストールされていません。
-    echo setup.batを実行してください。
-    pause
-    exit /b 1
-)
+if %ERRORLEVEL% neq 0 goto :no_flask
 echo [OK] Python依存関係確認済み
+goto :check_static
 
-REM 静的ファイルの確認とビルド
-if not exist "static\index.html" (
-    echo.
-    echo [!] フロントエンドがビルドされていません。ビルド中...
-    echo.
+:no_flask
+echo [エラー] Pythonパッケージがインストールされていません。
+echo setup.batを先に実行してください。
+echo.
+pause
+exit /b 1
 
-    REM Node.jsの確認
-    node --version >nul 2>&1
-    if !ERRORLEVEL! neq 0 (
-        echo [エラー] Node.jsが見つかりません。
-        echo setup.batを実行してNode.jsをインストールしてください。
-        pause
-        exit /b 1
-    )
+:check_static
+REM 静的ファイルの確認
+if exist "static\index.html" goto :static_ok
 
-    if not exist "frontend\package.json" (
-        echo [エラー] frontend/package.jsonが見つかりません。
-        pause
-        exit /b 1
-    )
+echo.
+echo [!] フロントエンドがありません。ビルドを試みます...
+echo.
 
-    pushd frontend
+node --version >nul 2>&1
+if %ERRORLEVEL% neq 0 goto :no_node
 
-    echo npm install 実行中...
-    call npm install
-    if !ERRORLEVEL! neq 0 (
-        echo [エラー] npm installに失敗しました。
-        popd
-        pause
-        exit /b 1
-    )
+if not exist "frontend\package.json" goto :no_package
 
-    echo npm run build 実行中...
-    call npm run build
-    if !ERRORLEVEL! neq 0 (
-        echo [エラー] ビルドに失敗しました。
-        popd
-        pause
-        exit /b 1
-    )
+cd frontend
+echo npm install 実行中...
+call npm install
+if %ERRORLEVEL% neq 0 goto :npm_install_failed
 
-    popd
+echo npm run build 実行中...
+call npm run build
+if %ERRORLEVEL% neq 0 goto :npm_build_failed
+cd ..
 
-    if not exist "static\index.html" (
-        echo [エラー] ビルド後もstatic/index.htmlが見つかりません。
-        pause
-        exit /b 1
-    )
+if not exist "static\index.html" goto :build_no_output
+echo [OK] フロントエンドビルド完了
+goto :static_ok
 
-    echo [OK] フロントエンドビルド完了
-)
+:no_node
+echo [エラー] Node.jsがありません。
+echo.
+echo 解決方法:
+echo 1. GitHubから最新版をダウンロードしてください
+echo 2. または Node.js をインストール: https://nodejs.org/
+echo.
+pause
+exit /b 1
 
-echo [OK] static/index.html確認済み
+:no_package
+echo [エラー] frontend/package.jsonがありません。
+echo GitHubから最新版をダウンロードしてください。
+echo.
+pause
+exit /b 1
+
+:npm_install_failed
+echo [エラー] npm installに失敗しました。
+cd ..
+pause
+exit /b 1
+
+:npm_build_failed
+echo [エラー] ビルドに失敗しました。
+cd ..
+pause
+exit /b 1
+
+:build_no_output
+echo [エラー] ビルド後もstatic/index.htmlがありません。
+echo.
+pause
+exit /b 1
+
+:static_ok
+echo [OK] フロントエンド確認済み
 echo.
 echo ================================================
 echo  URL: http://localhost:5003
@@ -103,8 +124,8 @@ start "" cmd /c "timeout /t 2 >nul && start http://localhost:5003"
 
 echo.
 echo ================================================
-echo  サーバー実行中 - このウィンドウを閉じないで！
-echo  停止: Ctrl+C またはウィンドウを閉じる
+echo  サーバー実行中
+echo  停止: Ctrl+C または このウィンドウを閉じる
 echo ================================================
 echo.
 
@@ -113,4 +134,5 @@ python voice_changer_web.py
 
 echo.
 echo サーバーが停止しました。
+echo.
 pause
